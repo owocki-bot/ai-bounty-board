@@ -17,6 +17,63 @@ app.use(express.json());
 // In-memory storage (use DB in production)
 const bounties = new Map();
 const agents = new Map();
+const webhooks = new Map(); // Agent notification webhooks
+
+// Known agent registries to ping on new bounties
+const AGENT_REGISTRIES = [
+  // Add agent endpoints here as they register
+  // { name: 'elizaos', endpoint: 'https://...', method: 'POST' }
+];
+
+/**
+ * Notify registered agents about new bounties
+ */
+async function notifyAgents(bounty) {
+  const notification = {
+    type: 'new_bounty',
+    bounty: {
+      id: bounty.id,
+      title: bounty.title,
+      description: bounty.description,
+      reward: bounty.reward,
+      rewardFormatted: bounty.rewardFormatted,
+      tags: bounty.tags,
+      deadline: bounty.deadline,
+      requirements: bounty.requirements,
+      claimUrl: `https://owocki-bounty-board.vercel.app/bounties/${bounty.id}/claim`,
+      detailsUrl: `https://owocki-bounty-board.vercel.app/bounties/${bounty.id}`
+    },
+    timestamp: Date.now()
+  };
+
+  // Notify all registered webhooks
+  for (const [id, webhook] of webhooks) {
+    try {
+      await fetch(webhook.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(notification)
+      });
+      console.log(`[NOTIFY] Pinged ${webhook.name} about bounty ${bounty.id}`);
+    } catch (err) {
+      console.log(`[NOTIFY] Failed to ping ${webhook.name}: ${err.message}`);
+    }
+  }
+
+  // Notify known registries
+  for (const registry of AGENT_REGISTRIES) {
+    try {
+      await fetch(registry.endpoint, {
+        method: registry.method || 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(notification)
+      });
+      console.log(`[NOTIFY] Pinged registry ${registry.name} about bounty ${bounty.id}`);
+    } catch (err) {
+      console.log(`[NOTIFY] Failed to ping registry ${registry.name}: ${err.message}`);
+    }
+  }
+}
 
 // x402 Configuration for Base
 const X402_CONFIG = {
@@ -95,7 +152,7 @@ function requirePayment(amount, description) {
  * POST /agents
  */
 app.post('/agents', (req, res) => {
-  const { address, name, capabilities, endpoint } = req.body;
+  const { address, name, capabilities, endpoint, webhookUrl } = req.body;
   
   if (!address || !name) {
     return res.status(400).json({ error: 'address and name required' });
@@ -113,7 +170,81 @@ app.post('/agents', (req, res) => {
   };
 
   agents.set(agent.address, agent);
+  
+  // Register webhook if provided
+  if (webhookUrl) {
+    webhooks.set(agent.address, {
+      name: name,
+      endpoint: webhookUrl,
+      agentAddress: agent.address
+    });
+    console.log(`[WEBHOOK] Registered webhook for ${name}: ${webhookUrl}`);
+  }
+  
   res.json(agent);
+});
+
+/**
+ * Register a webhook for bounty notifications
+ * POST /webhooks
+ */
+app.post('/webhooks', (req, res) => {
+  const { name, endpoint, agentAddress } = req.body;
+  
+  if (!name || !endpoint) {
+    return res.status(400).json({ error: 'name and endpoint required' });
+  }
+
+  const id = uuidv4();
+  webhooks.set(id, { id, name, endpoint, agentAddress: agentAddress || null, createdAt: Date.now() });
+  
+  console.log(`[WEBHOOK] Registered: ${name} -> ${endpoint}`);
+  res.json({ id, name, endpoint, message: 'Webhook registered. You will be notified of new bounties.' });
+});
+
+/**
+ * List registered webhooks
+ * GET /webhooks
+ */
+app.get('/webhooks', (req, res) => {
+  res.json(Array.from(webhooks.values()).map(w => ({
+    id: w.id,
+    name: w.name,
+    agentAddress: w.agentAddress
+  })));
+});
+
+/**
+ * Agent discovery - find bounties matching capabilities
+ * GET /discover
+ */
+app.get('/discover', (req, res) => {
+  const { capabilities, maxReward, minReward } = req.query;
+  let results = Array.from(bounties.values()).filter(b => b.status === 'open');
+  
+  // Filter by capabilities/tags match
+  if (capabilities) {
+    const caps = capabilities.split(',').map(c => c.trim().toLowerCase());
+    results = results.filter(b => 
+      b.tags.some(tag => caps.includes(tag.toLowerCase()))
+    );
+  }
+  
+  // Filter by reward range
+  if (minReward) {
+    results = results.filter(b => parseInt(b.reward) >= parseInt(minReward));
+  }
+  if (maxReward) {
+    results = results.filter(b => parseInt(b.reward) <= parseInt(maxReward));
+  }
+  
+  results.sort((a, b) => parseInt(b.reward) - parseInt(a.reward)); // Highest reward first
+  
+  res.json({
+    count: results.length,
+    bounties: results,
+    claimInstructions: 'POST to /bounties/{id}/claim with { agentAddress: "0x..." }'
+  });
 });
 
 /**
@@ -190,6 +321,9 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), (req, r
   bounties.set(bounty.id, bounty);
   
   console.log(`[BOUNTY CREATED] ${bounty.id}: ${title} - ${bounty.rewardFormatted} by ${req.payer}`);
+  
+  // Notify registered agents about new bounty
+  notifyAgents(bounty).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
   
   res.status(201).json(bounty);
 });
@@ -292,6 +426,50 @@ app.post('/bounties/:id/approve', async (req, res) => {
       // In production: include tx hash
     }
   });
+});
+
+/**
+ * Internal: Create bounty without payment (for dogfooding)
+ * POST /internal/bounties
+ * Requires X-Internal-Key header
+ */
+app.post('/internal/bounties', (req, res) => {
+  const internalKey = req.headers['x-internal-key'];
+  if (internalKey !== process.env.INTERNAL_KEY && internalKey !== 'owockibot-dogfood-2026') {
+    return res.status(401).json({ error: 'Invalid internal key' });
+  }
+
+  const { title, description, reward, tags, deadline, requirements, creator } = req.body;
+  
+  if (!title || !description || !reward) {
+    return res.status(400).json({ error: 'title, description, and reward required' });
+  }
+
+  const bounty = {
+    id: uuidv4(),
+    title,
+    description,
+    reward: reward.toString(),
+    rewardFormatted: (parseInt(reward) / 1e6).toFixed(2) + ' USDC',
+    tags: tags || [],
+    deadline: deadline || Date.now() + 7 * 24 * 60 * 60 * 1000,
+    requirements: requirements || [],
+    creator: creator || TREASURY_ADDRESS,
+    status: 'open',
+    claimedBy: null,
+    submissions: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+
+  bounties.set(bounty.id, bounty);
+  
+  console.log(`[BOUNTY CREATED INTERNAL] ${bounty.id}: ${title} - ${bounty.rewardFormatted}`);
+  
+  // Notify registered agents
+  notifyAgents(bounty).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
+  
+  res.status(201).json(bounty);
 });
 
 /**
