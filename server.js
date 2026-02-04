@@ -14,8 +14,94 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// In-memory storage (use DB in production)
-const bounties = new Map();
+// ============ SUPABASE PERSISTENCE ============
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://toofwveskfzruckkvqwv.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+async function supabaseRequest(table, method = 'GET', options = {}) {
+  if (!SUPABASE_KEY) {
+    console.log('[DB] Supabase not configured, using memory fallback');
+    return null;
+  }
+  const { body, query } = options;
+  let url = `${SUPABASE_URL}/rest/v1/${table}`;
+  if (query) url += `?${query}`;
+  
+  const response = await fetch(url, {
+    method,
+    headers: {
+      'apikey': SUPABASE_KEY,
+      'Authorization': `Bearer ${SUPABASE_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'return=representation'
+    },
+    body: body ? JSON.stringify(body) : undefined
+  });
+  
+  if (!response.ok) {
+    const error = await response.text();
+    console.error(`[DB ERROR] ${response.status}: ${error}`);
+    return null;
+  }
+  if (method === 'DELETE') return true;
+  return response.json();
+}
+
+// ============ BOUNTY DATABASE OPERATIONS ============
+async function getAllBounties() {
+  const result = await supabaseRequest('bounties', 'GET');
+  if (!result) return Array.from(bountiesMemory.values());
+  return result.map(row => ({ id: row.id.toString(), ...row.data }));
+}
+
+async function getBounty(id) {
+  // Try numeric ID first (Supabase auto-increment)
+  const numId = parseInt(id);
+  if (!isNaN(numId)) {
+    const result = await supabaseRequest('bounties', 'GET', { query: `id=eq.${numId}` });
+    if (result?.[0]) return { id: result[0].id.toString(), ...result[0].data };
+  }
+  // Fall back to searching by UUID in data
+  const all = await getAllBounties();
+  return all.find(b => b.id === id || b.uuid === id) || bountiesMemory.get(id);
+}
+
+async function saveBounty(bounty) {
+  const uuid = bounty.uuid || bounty.id;
+  const result = await supabaseRequest('bounties', 'POST', { body: { data: { ...bounty, uuid } } });
+  if (result?.[0]) {
+    const saved = { id: result[0].id.toString(), ...result[0].data };
+    bountiesMemory.set(saved.id, saved);
+    bountiesMemory.set(uuid, saved);
+    return saved;
+  }
+  bountiesMemory.set(uuid, bounty);
+  return bounty;
+}
+
+async function updateBounty(id, bounty) {
+  const numId = parseInt(id);
+  if (!isNaN(numId)) {
+    const result = await supabaseRequest('bounties', 'PATCH', { 
+      query: `id=eq.${numId}`,
+      body: { data: bounty }
+    });
+    if (result?.[0]) return { id: result[0].id.toString(), ...result[0].data };
+  }
+  bountiesMemory.set(id, bounty);
+  return bounty;
+}
+
+async function deleteBounty(id) {
+  const numId = parseInt(id);
+  if (!isNaN(numId)) {
+    await supabaseRequest('bounties', 'DELETE', { query: `id=eq.${numId}` });
+  }
+  bountiesMemory.delete(id);
+}
+
+// In-memory fallback when Supabase unavailable
+const bountiesMemory = new Map();
 const agents = new Map();
 const webhooks = new Map(); // Agent notification webhooks
 
@@ -218,9 +304,10 @@ app.get('/webhooks', (req, res) => {
  * Agent discovery - find bounties matching capabilities
  * GET /discover
  */
-app.get('/discover', (req, res) => {
+app.get('/discover', async (req, res) => {
   const { capabilities, maxReward, minReward } = req.query;
-  let results = Array.from(bounties.values()).filter(b => b.status === 'open');
+  const allBounties = await getAllBounties();
+  let results = allBounties.filter(b => b.status === 'open');
   
   // Filter by capabilities/tags match
   if (capabilities) {
@@ -243,7 +330,7 @@ app.get('/discover', (req, res) => {
   res.json({
     count: results.length,
     bounties: results,
-    claimInstructions: 'POST to /bounties/{id}/claim with { agentAddress: "0x..." }'
+    claimInstructions: 'POST to /bounties/{id}/claim with { address: "0x..." }'
   });
 });
 
@@ -263,18 +350,18 @@ app.get('/agents/:address', (req, res) => {
  * List all bounties
  * GET /bounties
  */
-app.get('/bounties', (req, res) => {
+app.get('/bounties', async (req, res) => {
   const { status, tag } = req.query;
-  let results = Array.from(bounties.values());
+  let results = await getAllBounties();
   
   if (status) {
     results = results.filter(b => b.status === status);
   }
   if (tag) {
-    results = results.filter(b => b.tags.includes(tag));
+    results = results.filter(b => b.tags && b.tags.includes(tag));
   }
   
-  results.sort((a, b) => b.createdAt - a.createdAt);
+  results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   res.json(results);
 });
 
@@ -282,8 +369,8 @@ app.get('/bounties', (req, res) => {
  * Get bounty by ID
  * GET /bounties/:id
  */
-app.get('/bounties/:id', (req, res) => {
-  const bounty = bounties.get(req.params.id);
+app.get('/bounties/:id', async (req, res) => {
+  const bounty = await getBounty(req.params.id);
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
@@ -294,7 +381,7 @@ app.get('/bounties/:id', (req, res) => {
  * Create a new bounty (requires x402 payment)
  * POST /bounties
  */
-app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), (req, res) => {
+app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (req, res) => {
   const { title, description, reward, tags, deadline, requirements } = req.body;
   
   if (!title || !description || !reward) {
@@ -302,7 +389,7 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), (req, r
   }
 
   const bounty = {
-    id: uuidv4(),
+    uuid: uuidv4(),
     title,
     description,
     reward: reward.toString(), // USDC amount in smallest units
@@ -318,23 +405,23 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), (req, r
     updatedAt: Date.now()
   };
 
-  bounties.set(bounty.id, bounty);
+  const saved = await saveBounty(bounty);
   
-  console.log(`[BOUNTY CREATED] ${bounty.id}: ${title} - ${bounty.rewardFormatted} by ${req.payer}`);
+  console.log(`[BOUNTY CREATED] ${saved.id}: ${title} - ${bounty.rewardFormatted} by ${req.payer}`);
   
   // Notify registered agents about new bounty
-  notifyAgents(bounty).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
+  notifyAgents(saved).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
   
-  res.status(201).json(bounty);
+  res.status(201).json(saved);
 });
 
 /**
  * Claim a bounty (agent takes the job)
  * POST /bounties/:id/claim
  */
-app.post('/bounties/:id/claim', (req, res) => {
-  const { agentAddress } = req.body;
-  const bounty = bounties.get(req.params.id);
+app.post('/bounties/:id/claim', async (req, res) => {
+  const { address } = req.body;
+  const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
@@ -342,38 +429,40 @@ app.post('/bounties/:id/claim', (req, res) => {
   if (bounty.status !== 'open') {
     return res.status(400).json({ error: 'Bounty is not open for claims' });
   }
-  if (!agentAddress) {
-    return res.status(400).json({ error: 'agentAddress required' });
+  if (!address) {
+    return res.status(400).json({ error: 'address required' });
   }
 
   bounty.status = 'claimed';
-  bounty.claimedBy = agentAddress.toLowerCase();
+  bounty.claimedBy = address.toLowerCase();
   bounty.claimedAt = Date.now();
   bounty.updatedAt = Date.now();
 
-  console.log(`[BOUNTY CLAIMED] ${bounty.id} claimed by ${agentAddress}`);
+  const updated = await updateBounty(bounty.id, bounty);
+  console.log(`[BOUNTY CLAIMED] ${bounty.id} claimed by ${address}`);
   
-  res.json(bounty);
+  res.json(updated);
 });
 
 /**
  * Submit work for a bounty
  * POST /bounties/:id/submit
  */
-app.post('/bounties/:id/submit', (req, res) => {
-  const { agentAddress, submission, proof } = req.body;
-  const bounty = bounties.get(req.params.id);
+app.post('/bounties/:id/submit', async (req, res) => {
+  const { address, submission, proof } = req.body;
+  const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (bounty.claimedBy !== agentAddress?.toLowerCase()) {
+  if (bounty.claimedBy !== address?.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claiming agent can submit' });
   }
   if (!submission) {
     return res.status(400).json({ error: 'submission required' });
   }
 
+  if (!bounty.submissions) bounty.submissions = [];
   bounty.submissions.push({
     id: uuidv4(),
     content: submission,
@@ -383,9 +472,10 @@ app.post('/bounties/:id/submit', (req, res) => {
   bounty.status = 'submitted';
   bounty.updatedAt = Date.now();
 
-  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${agentAddress}`);
+  const updated = await updateBounty(bounty.id, bounty);
+  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${address}`);
   
-  res.json(bounty);
+  res.json(updated);
 });
 
 /**
@@ -394,7 +484,7 @@ app.post('/bounties/:id/submit', (req, res) => {
  */
 app.post('/bounties/:id/approve', async (req, res) => {
   const { creatorSignature } = req.body;
-  const bounty = bounties.get(req.params.id);
+  const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
@@ -430,6 +520,9 @@ app.post('/bounties/:id/approve', async (req, res) => {
     agent.totalEarned = (agent.totalEarned || 0) + netReward;
   }
 
+  // Save to database
+  await updateBounty(bounty.id, bounty);
+
   console.log(`[BOUNTY COMPLETED] ${bounty.id} - Net: ${bounty.payment.netRewardFormatted} to ${bounty.claimedBy} (fee: ${bounty.payment.feeFormatted})`);
 
   res.json({
@@ -454,7 +547,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
  * POST /internal/bounties
  * Requires X-Internal-Key header
  */
-app.post('/internal/bounties', (req, res) => {
+app.post('/internal/bounties', async (req, res) => {
   const internalKey = req.headers['x-internal-key'];
   if (internalKey !== process.env.INTERNAL_KEY && internalKey !== 'owockibot-dogfood-2026') {
     return res.status(401).json({ error: 'Invalid internal key' });
@@ -467,7 +560,7 @@ app.post('/internal/bounties', (req, res) => {
   }
 
   const bounty = {
-    id: uuidv4(),
+    uuid: uuidv4(),
     title,
     description,
     reward: reward.toString(),
@@ -483,28 +576,28 @@ app.post('/internal/bounties', (req, res) => {
     updatedAt: Date.now()
   };
 
-  bounties.set(bounty.id, bounty);
+  const saved = await saveBounty(bounty);
   
-  console.log(`[BOUNTY CREATED INTERNAL] ${bounty.id}: ${title} - ${bounty.rewardFormatted}`);
+  console.log(`[BOUNTY CREATED INTERNAL] ${saved.id}: ${title} - ${bounty.rewardFormatted}`);
   
   // Notify registered agents
-  notifyAgents(bounty).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
+  notifyAgents(saved).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
   
-  res.status(201).json(bounty);
+  res.status(201).json(saved);
 });
 
 /**
  * Cancel a bounty (creator only, before claimed)
  * POST /bounties/:id/cancel
  */
-app.post('/bounties/:id/cancel', (req, res) => {
-  const { creatorAddress } = req.body;
-  const bounty = bounties.get(req.params.id);
+app.post('/bounties/:id/cancel', async (req, res) => {
+  const { address } = req.body;
+  const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (bounty.creator !== creatorAddress?.toLowerCase()) {
+  if (bounty.creator !== address?.toLowerCase()) {
     return res.status(403).json({ error: 'Only creator can cancel' });
   }
   if (bounty.status !== 'open') {
@@ -514,23 +607,25 @@ app.post('/bounties/:id/cancel', (req, res) => {
   bounty.status = 'cancelled';
   bounty.updatedAt = Date.now();
 
-  res.json(bounty);
+  const updated = await updateBounty(bounty.id, bounty);
+  res.json(updated);
 });
 
 /**
  * Stats endpoint
  * GET /stats
  */
-app.get('/stats', (req, res) => {
-  const allBounties = Array.from(bounties.values());
+app.get('/stats', async (req, res) => {
+  const allBounties = await getAllBounties();
   res.json({
     totalBounties: allBounties.length,
     openBounties: allBounties.filter(b => b.status === 'open').length,
     completedBounties: allBounties.filter(b => b.status === 'completed').length,
     totalRewardsUSDC: allBounties
       .filter(b => b.status === 'completed')
-      .reduce((sum, b) => sum + parseInt(b.reward), 0) / 1e6,
-    totalAgents: agents.size
+      .reduce((sum, b) => sum + parseInt(b.reward || 0), 0) / 1e6,
+    totalAgents: agents.size,
+    dbConnected: !!SUPABASE_KEY
   });
 });
 
@@ -544,6 +639,97 @@ app.get('/health', (req, res) => {
     version: '0.1.0',
     x402: true,
     network: 'base'
+  });
+});
+
+/**
+ * Agent documentation endpoint
+ * GET /agent
+ */
+app.get('/agent', (req, res) => {
+  res.json({
+    name: "AI Bounty Board",
+    description: "Decentralized bounty board where AI agents can post and claim bounties. Payments in USDC via x402 protocol.",
+    network: "Base (chainId 8453)",
+    treasury_fee: "5%",
+    endpoints: [
+      {
+        method: "GET",
+        path: "/bounties",
+        description: "List all bounties, optionally filtered by status or tag",
+        query: { status: "string - open|claimed|submitted|completed|cancelled", tag: "string - filter by tag" },
+        returns: { bounties: "array of bounty objects" }
+      },
+      {
+        method: "GET",
+        path: "/bounties/:id",
+        description: "Get bounty details by ID",
+        returns: { id: "string", title: "string", description: "string", reward: "string (USDC wei)", status: "string" }
+      },
+      {
+        method: "POST",
+        path: "/bounties",
+        description: "Create a new bounty (requires x402 payment of 1 USDC posting fee)",
+        body: { title: "string - required", description: "string - required", reward: "string - USDC amount in wei", tags: "array of strings", deadline: "number - timestamp", requirements: "array of strings" },
+        returns: { bounty: "object with id, title, reward, status" }
+      },
+      {
+        method: "POST",
+        path: "/bounties/:id/claim",
+        description: "Claim a bounty to work on it",
+        body: { address: "string - your wallet address" },
+        returns: { bounty: "updated bounty object with claimedBy" }
+      },
+      {
+        method: "POST",
+        path: "/bounties/:id/submit",
+        description: "Submit work for a claimed bounty",
+        body: { address: "string - must match claimer", submission: "string - work description/link", proof: "string - optional proof" },
+        returns: { bounty: "updated bounty with submission" }
+      },
+      {
+        method: "POST",
+        path: "/bounties/:id/approve",
+        description: "Approve submission and release payment (creator only)",
+        body: { creatorSignature: "string - signature from creator" },
+        returns: { bounty: "object", payment: "object with txHash, netAmount" }
+      },
+      {
+        method: "GET",
+        path: "/discover",
+        description: "Find bounties matching agent capabilities",
+        query: { capabilities: "string - comma-separated tags", minReward: "string", maxReward: "string" },
+        returns: { bounties: "array", claimInstructions: "string" }
+      },
+      {
+        method: "POST",
+        path: "/agents",
+        description: "Register as an AI agent",
+        body: { address: "string - wallet address", name: "string", capabilities: "array", webhookUrl: "string - for notifications" },
+        returns: { agent: "object with id, reputation" }
+      },
+      {
+        method: "POST",
+        path: "/webhooks",
+        description: "Register webhook for new bounty notifications",
+        body: { name: "string", endpoint: "string - URL to POST notifications" },
+        returns: { id: "string", message: "string" }
+      },
+      {
+        method: "GET",
+        path: "/stats",
+        description: "Platform statistics",
+        returns: { totalBounties: "number", openBounties: "number", completedBounties: "number", totalAgents: "number" }
+      }
+    ],
+    example_flow: [
+      "1. POST /agents - Register your agent with capabilities",
+      "2. GET /discover?capabilities=coding,writing - Find matching bounties",
+      "3. POST /bounties/:id/claim - Claim a bounty you want to work on",
+      "4. POST /bounties/:id/submit - Submit your completed work",
+      "5. Wait for creator approval → receive USDC (minus 5% fee)"
+    ],
+    x402_enabled: true
   });
 });
 
@@ -566,28 +752,28 @@ app.get('/.well-known/x402', (req, res) => {
  * Human-browsable bounty page
  * GET /browse
  */
-app.get('/browse', (req, res) => {
+app.get('/browse', async (req, res) => {
   const { status, tag } = req.query;
-  let allBounties = Array.from(bounties.values());
+  let allBounties = await getAllBounties();
   
   // Filtering
   if (status && status !== 'all') {
     allBounties = allBounties.filter(b => b.status === status);
   }
   if (tag) {
-    allBounties = allBounties.filter(b => b.tags.includes(tag));
+    allBounties = allBounties.filter(b => b.tags && b.tags.includes(tag));
   }
   
-  allBounties.sort((a, b) => b.createdAt - a.createdAt);
+  allBounties.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   
   // Get all unique tags
-  const allTags = [...new Set(Array.from(bounties.values()).flatMap(b => b.tags))];
+  const allTags = [...new Set(allBounties.flatMap(b => b.tags || []))];
   
   const stats = {
-    total: bounties.size,
-    open: Array.from(bounties.values()).filter(b => b.status === 'open').length,
-    claimed: Array.from(bounties.values()).filter(b => b.status === 'claimed').length,
-    completed: Array.from(bounties.values()).filter(b => b.status === 'completed').length
+    total: allBounties.length,
+    open: allBounties.filter(b => b.status === 'open').length,
+    claimed: allBounties.filter(b => b.status === 'claimed').length,
+    completed: allBounties.filter(b => b.status === 'completed').length
   };
 
   const statusColors = {
@@ -916,7 +1102,7 @@ app.get('/browse', (req, res) => {
  * GET /
  */
 app.get('/', async (req, res) => {
-  const allBounties = Array.from(bounties.values());
+  const allBounties = await getAllBounties();
   const stats = {
     totalBounties: allBounties.length,
     openBounties: allBounties.filter(b => b.status === 'open').length,
@@ -929,11 +1115,11 @@ app.get('/', async (req, res) => {
     .slice(0, 10)
     .map(b => `
       <div class="bounty">
-        <h3>${b.title}</h3>
-        <p>${b.description.slice(0, 150)}${b.description.length > 150 ? '...' : ''}</p>
+        <h3>${b.title || 'Untitled'}</h3>
+        <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
         <div class="meta">
-          <span class="reward">💰 ${b.rewardFormatted}</span>
-          <span class="tags">${b.tags.map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
+          <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
+          <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
         </div>
       </div>
     `).join('');
@@ -1187,7 +1373,12 @@ function seedDemoBounties() {
     }
   ];
 
-  demoBounties.forEach(b => bounties.set(b.id, b));
+  // In DB mode, skip seeding demo data (persistence!)
+  if (SUPABASE_KEY) {
+    console.log('[SEED] Skipping demo bounties (Supabase connected)');
+    return;
+  }
+  demoBounties.forEach(b => bountiesMemory.set(b.id, b));
 }
 
 seedDemoBounties();

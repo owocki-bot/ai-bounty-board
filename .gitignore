@@ -1,5 +1,30 @@
+# Dependencies
 node_modules/
+
+# Environment files (SECRETS!)
 .env
+.env.*
 .env.local
+.env.*.local
+
+# Vercel
+.vercel/
+
+# Build outputs
+dist/
+build/
+.next/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
-.vercel
+npm-debug.log*
