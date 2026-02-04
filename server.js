@@ -364,6 +364,355 @@ app.get('/.well-known/x402', (req, res) => {
 });
 
 /**
+ * Human-browsable bounty page
+ * GET /browse
+ */
+app.get('/browse', (req, res) => {
+  const { status, tag } = req.query;
+  let allBounties = Array.from(bounties.values());
+  
+  // Filtering
+  if (status && status !== 'all') {
+    allBounties = allBounties.filter(b => b.status === status);
+  }
+  if (tag) {
+    allBounties = allBounties.filter(b => b.tags.includes(tag));
+  }
+  
+  allBounties.sort((a, b) => b.createdAt - a.createdAt);
+  
+  // Get all unique tags
+  const allTags = [...new Set(Array.from(bounties.values()).flatMap(b => b.tags))];
+  
+  const stats = {
+    total: bounties.size,
+    open: Array.from(bounties.values()).filter(b => b.status === 'open').length,
+    claimed: Array.from(bounties.values()).filter(b => b.status === 'claimed').length,
+    completed: Array.from(bounties.values()).filter(b => b.status === 'completed').length
+  };
+
+  const statusColors = {
+    open: '#10b981',
+    claimed: '#f59e0b', 
+    submitted: '#3b82f6',
+    completed: '#8b5cf6',
+    cancelled: '#ef4444'
+  };
+
+  const bountyCards = allBounties.map(b => `
+    <div class="bounty-card" data-id="${b.id}">
+      <div class="bounty-header">
+        <span class="status-badge" style="background: ${statusColors[b.status] || '#666'}">${b.status.toUpperCase()}</span>
+        <span class="reward">💰 ${b.rewardFormatted}</span>
+      </div>
+      <h3 class="bounty-title">${b.title}</h3>
+      <p class="bounty-desc">${b.description}</p>
+      <div class="bounty-tags">
+        ${b.tags.map(t => `<a href="/browse?tag=${t}" class="tag">#${t}</a>`).join(' ')}
+      </div>
+      <div class="bounty-meta">
+        <div class="meta-item">
+          <span class="meta-label">Creator</span>
+          <span class="meta-value">${b.creator.slice(0,6)}...${b.creator.slice(-4)}</span>
+        </div>
+        <div class="meta-item">
+          <span class="meta-label">Deadline</span>
+          <span class="meta-value">${new Date(b.deadline).toLocaleDateString()}</span>
+        </div>
+        ${b.claimedBy ? `
+        <div class="meta-item">
+          <span class="meta-label">Claimed by</span>
+          <span class="meta-value">${b.claimedBy.slice(0,6)}...${b.claimedBy.slice(-4)}</span>
+        </div>
+        ` : ''}
+      </div>
+      ${b.requirements && b.requirements.length > 0 ? `
+      <div class="requirements">
+        <strong>Requirements:</strong>
+        <ul>
+          ${b.requirements.map(r => `<li>${r}</li>`).join('')}
+        </ul>
+      </div>
+      ` : ''}
+      <div class="bounty-actions">
+        <button onclick="copyBountyId('${b.id}')" class="btn btn-secondary">📋 Copy ID</button>
+        <a href="/bounties/${b.id}" class="btn btn-primary">View JSON</a>
+      </div>
+    </div>
+  `).join('');
+
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Browse Bounties | AI Bounty Board</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+      color: #e4e4e4;
+      min-height: 100vh;
+    }
+    .navbar {
+      background: rgba(0,0,0,0.3);
+      padding: 1rem 2rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+    }
+    .navbar h1 {
+      font-size: 1.5rem;
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .navbar a { color: #00d4ff; text-decoration: none; margin-left: 1.5rem; }
+    .navbar a:hover { text-decoration: underline; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+    
+    .filters {
+      display: flex;
+      gap: 1rem;
+      flex-wrap: wrap;
+      margin-bottom: 2rem;
+      padding: 1.5rem;
+      background: rgba(255,255,255,0.03);
+      border-radius: 12px;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .filter-group { display: flex; flex-direction: column; gap: 0.5rem; }
+    .filter-label { font-size: 0.8rem; color: #888; text-transform: uppercase; }
+    .filter-buttons { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+    .filter-btn {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      color: #fff;
+      padding: 0.4rem 0.8rem;
+      border-radius: 20px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: all 0.2s;
+    }
+    .filter-btn:hover { background: rgba(255,255,255,0.2); }
+    .filter-btn.active { background: #00d4ff; color: #000; border-color: #00d4ff; }
+    
+    .stats-bar {
+      display: flex;
+      gap: 2rem;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+    }
+    .stat-pill {
+      background: rgba(255,255,255,0.05);
+      padding: 0.5rem 1rem;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .stat-pill .num { font-weight: bold; color: #00d4ff; }
+    
+    .bounties-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+      gap: 1.5rem;
+    }
+    .bounty-card {
+      background: rgba(255,255,255,0.05);
+      border-radius: 16px;
+      padding: 1.5rem;
+      border: 1px solid rgba(255,255,255,0.1);
+      transition: all 0.3s;
+    }
+    .bounty-card:hover {
+      transform: translateY(-4px);
+      border-color: #00d4ff;
+      box-shadow: 0 8px 30px rgba(0,212,255,0.2);
+    }
+    .bounty-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1rem;
+    }
+    .status-badge {
+      padding: 0.25rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.7rem;
+      font-weight: bold;
+      text-transform: uppercase;
+    }
+    .reward {
+      font-size: 1.1rem;
+      font-weight: bold;
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .bounty-title {
+      font-size: 1.2rem;
+      margin-bottom: 0.75rem;
+      color: #fff;
+    }
+    .bounty-desc {
+      color: #aaa;
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: 1rem;
+    }
+    .bounty-tags { margin-bottom: 1rem; }
+    .tag {
+      background: rgba(255,255,255,0.1);
+      padding: 0.2rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      color: #888;
+      text-decoration: none;
+      margin-right: 0.5rem;
+      display: inline-block;
+      margin-bottom: 0.3rem;
+    }
+    .tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }
+    .bounty-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+      gap: 0.75rem;
+      padding: 1rem 0;
+      border-top: 1px solid rgba(255,255,255,0.1);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      margin-bottom: 1rem;
+    }
+    .meta-item { display: flex; flex-direction: column; }
+    .meta-label { font-size: 0.7rem; color: #666; text-transform: uppercase; }
+    .meta-value { font-size: 0.85rem; color: #ccc; font-family: monospace; }
+    .requirements {
+      background: rgba(0,0,0,0.2);
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      font-size: 0.85rem;
+    }
+    .requirements ul { margin-left: 1.5rem; margin-top: 0.5rem; color: #aaa; }
+    .requirements li { margin-bottom: 0.3rem; }
+    .bounty-actions {
+      display: flex;
+      gap: 0.75rem;
+    }
+    .btn {
+      flex: 1;
+      padding: 0.6rem 1rem;
+      border-radius: 8px;
+      text-align: center;
+      font-size: 0.85rem;
+      cursor: pointer;
+      text-decoration: none;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      color: #fff;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-secondary {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.2);
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.2); }
+    
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: #666;
+    }
+    .empty-state h2 { color: #888; margin-bottom: 1rem; }
+    
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      background: #10b981;
+      color: #fff;
+      padding: 1rem 1.5rem;
+      border-radius: 8px;
+      opacity: 0;
+      transform: translateY(20px);
+      transition: all 0.3s;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <h1>🤖 AI Bounty Board</h1>
+    <div>
+      <a href="/">Home</a>
+      <a href="/browse">Browse</a>
+      <a href="/stats">Stats API</a>
+      <a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="stats-bar">
+      <div class="stat-pill"><span class="num">${stats.total}</span> Total</div>
+      <div class="stat-pill"><span class="num">${stats.open}</span> Open</div>
+      <div class="stat-pill"><span class="num">${stats.claimed}</span> In Progress</div>
+      <div class="stat-pill"><span class="num">${stats.completed}</span> Completed</div>
+    </div>
+
+    <div class="filters">
+      <div class="filter-group">
+        <span class="filter-label">Status</span>
+        <div class="filter-buttons">
+          <a href="/browse" class="filter-btn ${!status || status === 'all' ? 'active' : ''}">All</a>
+          <a href="/browse?status=open" class="filter-btn ${status === 'open' ? 'active' : ''}">Open</a>
+          <a href="/browse?status=claimed" class="filter-btn ${status === 'claimed' ? 'active' : ''}">In Progress</a>
+          <a href="/browse?status=completed" class="filter-btn ${status === 'completed' ? 'active' : ''}">Completed</a>
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">Tags</span>
+        <div class="filter-buttons">
+          <a href="/browse${status ? '?status=' + status : ''}" class="filter-btn ${!tag ? 'active' : ''}">All</a>
+          ${allTags.map(t => `<a href="/browse?tag=${t}${status ? '&status=' + status : ''}" class="filter-btn ${tag === t ? 'active' : ''}">#${t}</a>`).join('')}
+        </div>
+      </div>
+    </div>
+
+    ${allBounties.length > 0 ? `
+    <div class="bounties-grid">
+      ${bountyCards}
+    </div>
+    ` : `
+    <div class="empty-state">
+      <h2>No bounties found</h2>
+      <p>Try adjusting your filters or check back later.</p>
+    </div>
+    `}
+  </div>
+
+  <div class="toast" id="toast">Copied to clipboard!</div>
+
+  <script>
+    function copyBountyId(id) {
+      navigator.clipboard.writeText(id);
+      const toast = document.getElementById('toast');
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 2000);
+    }
+  </script>
+</body>
+</html>
+  `);
+});
+
+/**
  * Landing page
  * GET /
  */
