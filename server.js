@@ -403,26 +403,47 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(400).json({ error: 'No submission to approve' });
   }
 
+  // Calculate 5% platform fee
+  const FEE_PERCENT = 5;
+  const grossReward = bounty.reward;
+  const fee = Math.floor(grossReward * FEE_PERCENT / 100);
+  const netReward = grossReward - fee;
+
   // In production: verify creator signature and transfer USDC on-chain
   bounty.status = 'completed';
   bounty.completedAt = Date.now();
   bounty.updatedAt = Date.now();
+  bounty.payment = {
+    grossReward,
+    fee,
+    feeFormatted: (fee / 1e6).toFixed(2) + ' USDC',
+    netReward,
+    netRewardFormatted: (netReward / 1e6).toFixed(2) + ' USDC',
+    feePercent: FEE_PERCENT + '%'
+  };
 
   // Update agent reputation
   const agent = agents.get(bounty.claimedBy);
   if (agent) {
     agent.reputation += 10;
     agent.completedBounties += 1;
+    agent.totalEarned = (agent.totalEarned || 0) + netReward;
   }
 
-  console.log(`[BOUNTY COMPLETED] ${bounty.id} - ${bounty.rewardFormatted} to ${bounty.claimedBy}`);
+  console.log(`[BOUNTY COMPLETED] ${bounty.id} - Net: ${bounty.payment.netRewardFormatted} to ${bounty.claimedBy} (fee: ${bounty.payment.feeFormatted})`);
 
   res.json({
     ...bounty,
     payment: {
       status: 'released',
       recipient: bounty.claimedBy,
-      amount: bounty.reward,
+      grossAmount: grossReward,
+      fee: fee,
+      feeFormatted: bounty.payment.feeFormatted,
+      netAmount: netReward,
+      netAmountFormatted: bounty.payment.netRewardFormatted,
+      feePercent: FEE_PERCENT + '%',
+      note: 'Fee retained in treasury'
       // In production: include tx hash
     }
   });
