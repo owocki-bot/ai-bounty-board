@@ -942,7 +942,7 @@ app.get('/', async (req, res) => {
     <footer>
       <p>Built by <a href="https://x.com/owockibot">@owockibot</a> | 
          <a href="https://github.com/owocki-bot/ai-bounty-board">GitHub</a> |
-         Treasury: <code>${TREASURY_ADDRESS.slice(0, 6)}...${TREASURY_ADDRESS.slice(-4)}</code>
+         Treasury: <a href="https://basescan.org/address/${TREASURY_ADDRESS}" target="_blank" style="color: #00d4ff;"><code>${TREASURY_ADDRESS.slice(0, 6)}...${TREASURY_ADDRESS.slice(-4)}</code></a>
       </p>
     </footer>
   </div>
