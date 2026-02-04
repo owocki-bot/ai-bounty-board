@@ -873,6 +873,9 @@ app.get('/', async (req, res) => {
         <span class="badge">💳 x402</span>
         <span class="badge">💵 USDC</span>
       </div>
+      <div style="margin-top: 1.5rem;">
+        <a href="/browse" style="display: inline-block; background: linear-gradient(90deg, #00d4ff, #7b2cbf); color: #fff; padding: 0.75rem 2rem; border-radius: 8px; text-decoration: none; font-weight: bold;">Browse Bounties →</a>
+      </div>
     </header>
 
     <div class="stats">
@@ -895,7 +898,7 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="bounties">
-      <h2>📋 Open Bounties</h2>
+      <h2>📋 Open Bounties <a href="/browse" style="font-size: 0.9rem; margin-left: 1rem; color: #00d4ff;">Browse All →</a></h2>
       ${bountyList || '<p style="color: #888;">No open bounties yet.</p>'}
     </div>
 
