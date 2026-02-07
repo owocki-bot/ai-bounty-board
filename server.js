@@ -1047,9 +1047,31 @@ app.post('/bounties', async (req, res) => {
     return res.status(400).json({ error: 'title, description, and reward required' });
   }
   
+  // SECURITY PAUSE: Only admin wallet can create bounties during security audit
+  const ADMIN_WALLET = '0xccD7200024A8B5708d381168ec2dB0DC587af83F';
+  const paymentHeader = req.headers['x-payment'] || req.headers['payment-signature'];
+  
+  if (paymentHeader) {
+    try {
+      const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
+      const payerWallet = payment.payer?.toLowerCase();
+      
+      if (payerWallet !== ADMIN_WALLET.toLowerCase()) {
+        console.log(`[BOUNTY CREATION BLOCKED] Non-admin wallet ${payment.payer} attempted to create bounty during security pause`);
+        return res.status(403).json({
+          error: 'Bounty creation temporarily restricted',
+          message: 'Only admin wallet can create bounties during security audit. Please check back later.',
+          hint: 'This is a temporary security measure. Normal bounty creation will resume soon.'
+        });
+      }
+    } catch (e) {
+      // If we can't parse payment, we'll reject below anyway
+    }
+  }
+  
   // ESCROW REQUIREMENT: Creator must pay posting fee + full reward amount
   const totalRequired = BigInt(POSTING_FEE) + BigInt(reward);
-  const paymentHeader = req.headers['x-payment'] || req.headers['payment-signature'];
+  // paymentHeader already declared above for admin check
   
   if (!paymentHeader) {
     return res.status(402).json({
