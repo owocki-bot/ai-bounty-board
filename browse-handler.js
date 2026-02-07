@@ -13,6 +13,10 @@ app.get('/browse', async (req, res) => {
   let allBounties = await getAllBounties();
   console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
 
+  // Filter out corrupted bounties (no title)
+  allBounties = allBounties.filter(b => b.title);
+  console.log('[BROWSE] Valid bounties:', allBounties.length);
+
   // Keep unfiltered bounties for profile section
   const allBountiesUnfiltered = [...allBounties];
 
