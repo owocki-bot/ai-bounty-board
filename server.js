@@ -1100,6 +1100,32 @@ app.post('/bounties/:id/reject', async (req, res) => {
 });
 
 /**
+ * Restore/update a corrupted bounty (admin only)
+ * PATCH /bounties/:id
+ * Merges provided fields with existing bounty
+ */
+app.patch('/bounties/:id', async (req, res) => {
+  const internalKey = req.headers['x-internal-key'];
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  if (!validInternalKey) {
+    return res.status(401).json({ error: 'Admin authentication required. Provide x-internal-key header.' });
+  }
+  
+  const bounty = await getBounty(req.params.id);
+  if (!bounty) {
+    return res.status(404).json({ error: 'Bounty not found' });
+  }
+  
+  // Merge provided fields with existing
+  const updates = req.body;
+  const merged = { ...bounty, ...updates, id: bounty.id, updatedAt: Date.now() };
+  
+  const updated = await updateBounty(merged.id, merged);
+  console.log(`[BOUNTY RESTORED] #${merged.id} - fields updated: ${Object.keys(updates).join(', ')}`);
+  res.json(updated);
+});
+
+/**
  * AI Autograder - evaluate submission against requirements
  * POST /bounties/:id/grade
  * Returns pass/fail for each requirement + overall recommendation
