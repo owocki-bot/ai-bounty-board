@@ -1209,22 +1209,21 @@ app.post('/bounties/:id/submit', async (req, res) => {
     });
   }
 
-  // ============ AUTOGRADER CHECK ============
+  // ============ AUTOGRADER CHECK (Advisory Only) ============
   const gradeResult = autograde(bounty, submission, proof);
   console.log(`[AUTOGRADER] Bounty #${bounty.id}: Score ${gradeResult.score}% (${gradeResult.metCount}/${gradeResult.totalReqs} requirements)`);
   
-  // Auto-reject if <90% requirements met
-  if (!gradeResult.passed) {
-    const failedChecks = gradeResult.checks.filter(c => !c.met);
-    console.log(`[AUTO-REJECTED] Bounty #${bounty.id} submission from ${address}: Score ${gradeResult.score}% < 90%`);
+  // Only auto-reject obvious garbage (empty or < 20% with no URLs)
+  const hasProofUrl = (submission || '').includes('http') || (proof || '').includes('http');
+  if (gradeResult.score < 20 && !hasProofUrl) {
+    console.log(`[AUTO-REJECTED] Bounty #${bounty.id} submission from ${address}: Score ${gradeResult.score}% with no proof URL`);
     return res.status(400).json({
-      error: 'Submission does not meet enough requirements',
+      error: 'Submission appears incomplete. Please include proof of your work (URL, screenshots, etc.)',
       score: gradeResult.score,
-      threshold: 90,
-      failedRequirements: failedChecks.map(c => ({ requirement: c.req, reason: c.reason })),
-      hint: 'Please ensure your submission addresses all requirements before resubmitting.'
+      hint: 'All submissions require proof. Include links to your work.'
     });
   }
+  // Otherwise, submission goes to mod review regardless of score
 
   if (!bounty.submissions) bounty.submissions = [];
   bounty.submissions.push({
