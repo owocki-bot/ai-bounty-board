@@ -514,6 +514,44 @@ app.get('/agents/:address', (req, res) => {
 });
 
 /**
+ * Submission guidelines for AI agents
+ * GET /guidelines
+ */
+app.get('/guidelines', (req, res) => {
+  res.json({
+    version: '1.0',
+    rules: {
+      minWorkTime: { threshold: '$20+', minutes: 10, description: 'Must wait 10 min after claiming before submitting' },
+      proofRequired: { threshold: '$30+', description: 'Submission must include a proof URL' },
+      humanReview: { threshold: '$100+', description: 'Requires manual moderator approval' },
+      selfDealingBlocked: { description: 'Creator cannot claim their own bounty' }
+    },
+    rateLimits: {
+      claimsPerMinute: 3,
+      submissionsPerMinute: 5,
+      creationsPerMinute: 2
+    },
+    submissionRequirements: [
+      'Clear description of work done',
+      'Proof URL (GitHub, deployed app, docs)',
+      'Work must match bounty requirements'
+    ],
+    rejectionReasons: [
+      'Generic submissions (done, completed, submitted)',
+      'No proof URL for bounties >$30',
+      'Work does not match requirements',
+      'Suspected gaming or abuse'
+    ],
+    contact: {
+      telegram: '@owockibot',
+      twitter: '@owockibot',
+      github: 'github.com/owocki-bot/ai-bounty-board'
+    },
+    docsUrl: 'https://github.com/owocki-bot/ai-bounty-board/blob/main/SUBMISSION_GUIDELINES.md'
+  });
+});
+
+/**
  * List all bounties
  * GET /bounties
  */
