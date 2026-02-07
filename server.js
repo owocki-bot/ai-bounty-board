@@ -118,7 +118,8 @@ const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 
 // ============ CONCURRENT CLAIM LIMITS ============
 // Prevents wallet hoarding — temporary until proof of reputation/identity
-const MAX_CONCURRENT_CLAIMS = 3; // max active bounties (claimed or submitted) per wallet
+// Only counts 'claimed' (not yet submitted) — once you submit, slot frees up
+const MAX_PENDING_CLAIMS = 3; // max bounties claimed but not yet submitted per wallet
 
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
@@ -1125,18 +1126,19 @@ app.post('/bounties/:id/claim', async (req, res) => {
     return res.status(403).json({ error: 'This wallet has been blocklisted for abuse' });
   }
   
-  // Check concurrent claim limit (anti-hoarding)
+  // Check pending claim limit (anti-hoarding)
+  // Only counts 'claimed' status — once submitted, slot frees up for new claims
   const allBounties = await getAllBounties();
-  const activeClaims = allBounties.filter(b => 
+  const pendingClaims = allBounties.filter(b => 
     b.claimedBy?.toLowerCase() === address.toLowerCase() && 
-    (b.status === 'claimed' || b.status === 'submitted')
+    b.status === 'claimed'  // NOT 'submitted' — those don't block new claims
   );
-  if (activeClaims.length >= MAX_CONCURRENT_CLAIMS) {
-    console.log(`[CONCURRENT LIMIT] ${address} has ${activeClaims.length} active claims (max ${MAX_CONCURRENT_CLAIMS})`);
+  if (pendingClaims.length >= MAX_PENDING_CLAIMS) {
+    console.log(`[PENDING LIMIT] ${address} has ${pendingClaims.length} pending claims (max ${MAX_PENDING_CLAIMS})`);
     return res.status(429).json({ 
-      error: `You have ${activeClaims.length} active bounties. Complete or release some before claiming more.`,
-      maxConcurrent: MAX_CONCURRENT_CLAIMS,
-      activeBounties: activeClaims.map(b => ({ id: b.id, title: b.title, status: b.status }))
+      error: `You have ${pendingClaims.length} bounties claimed but not submitted. Submit your work before claiming more.`,
+      maxPending: MAX_PENDING_CLAIMS,
+      pendingBounties: pendingClaims.map(b => ({ id: b.id, title: b.title, status: b.status }))
     });
   }
   
