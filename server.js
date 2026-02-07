@@ -1040,8 +1040,59 @@ app.get('/mod/pending', async (req, res) => {
  * Create a new bounty (requires x402 payment)
  * POST /bounties
  */
-app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (req, res) => {
+app.post('/bounties', async (req, res) => {
   const { title, description, reward, tags, deadline, requirements } = req.body;
+  
+  if (!title || !description || !reward) {
+    return res.status(400).json({ error: 'title, description, and reward required' });
+  }
+  
+  // ESCROW REQUIREMENT: Creator must pay posting fee + full reward amount
+  const totalRequired = BigInt(POSTING_FEE) + BigInt(reward);
+  const paymentHeader = req.headers['x-payment'] || req.headers['payment-signature'];
+  
+  if (!paymentHeader) {
+    return res.status(402).json({
+      error: 'Payment Required: You must fund the bounty upfront',
+      x402: {
+        version: '1.0',
+        network: X402_CONFIG.network,
+        chainId: X402_CONFIG.chainId,
+        recipient: TREASURY_ADDRESS,
+        amount: totalRequired.toString(),
+        token: 'USDC',
+        tokenAddress: X402_CONFIG.accepts[0].address,
+        description: `Bounty escrow: ${(parseInt(reward) / 1e6).toFixed(2)} USDC reward + 1 USDC fee`,
+        breakdown: {
+          postingFee: POSTING_FEE,
+          reward: reward.toString(),
+          total: totalRequired.toString()
+        }
+      }
+    });
+  }
+  
+  // Verify payment
+  try {
+    const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
+    if (!payment.signature || !payment.payer) {
+      throw new Error('Invalid payment payload');
+    }
+    const message = `x402:${payment.recipient}:${payment.amount}:${payment.nonce}`;
+    const recoveredAddress = ethers.verifyMessage(message, payment.signature);
+    if (recoveredAddress.toLowerCase() !== payment.payer.toLowerCase()) {
+      throw new Error('Invalid signature');
+    }
+    if (BigInt(payment.amount) < totalRequired) {
+      throw new Error(`Insufficient payment: sent ${payment.amount}, need ${totalRequired}`);
+    }
+    req.payer = payment.payer;
+  } catch (error) {
+    return res.status(402).json({
+      error: 'Payment verification failed',
+      message: error.message
+    });
+  }
   
   // Rate limit bounty creation
   const rateCheck = checkRateLimit(req.payer, 'create');
@@ -1051,10 +1102,6 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (
       error: 'Too many bounty creations. Please wait before trying again.',
       retryAfter: rateCheck.retryAfter
     });
-  }
-  
-  if (!title || !description || !reward) {
-    return res.status(400).json({ error: 'title, description, and reward required' });
   }
   
   // Size limits for bounty content
@@ -1085,13 +1132,20 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (
     status: 'open', // open, claimed, submitted, completed, cancelled
     claimedBy: null,
     submissions: [],
+    escrow: {
+      funded: true,
+      amount: reward.toString(),
+      paidBy: req.payer,
+      paidAt: Date.now(),
+      released: false
+    },
     createdAt: Date.now(),
     updatedAt: Date.now()
   };
 
   const saved = await saveBounty(bounty);
   
-  console.log(`[BOUNTY CREATED] ${saved.id}: ${title} - ${bounty.rewardFormatted} by ${req.payer}`);
+  console.log(`[BOUNTY CREATED + ESCROWED] ${saved.id}: ${title} - ${bounty.rewardFormatted} by ${req.payer} (escrow funded)`);
   
   // Notify registered agents about new bounty
   notifyAgents(saved).catch(err => console.log(`[NOTIFY ERROR] ${err.message}`));
@@ -1418,6 +1472,20 @@ app.post('/bounties/:id/approve', async (req, res) => {
     }
   }
 
+  // ============ ESCROW CHECK ============
+  // Verify bounty is funded by creator (backward compat: old bounties without escrow allowed for now)
+  const requiresEscrow = bounty.createdAt > Date.now() - 60 * 60 * 1000; // Created in last hour = requires escrow
+  
+  if (requiresEscrow && (!bounty.escrow || !bounty.escrow.funded)) {
+    return res.status(400).json({ 
+      error: 'Bounty not funded. Creator must deposit reward in escrow before approval.',
+      hint: 'This bounty was created without escrow. Contact the creator to fund it or cancel it.'
+    });
+  }
+  if (bounty.escrow && bounty.escrow.released) {
+    return res.status(400).json({ error: 'Escrow already released. This bounty has already been paid.' });
+  }
+  
   // Calculate 5% platform fee
   const FEE_PERCENT = 5;
   const grossReward = parseInt(bounty.reward);
@@ -1512,6 +1580,14 @@ app.post('/bounties/:id/approve', async (req, res) => {
   bounty.status = 'completed';
   bounty.completedAt = Date.now();
   bounty.updatedAt = Date.now();
+  
+  // Mark escrow as released
+  if (bounty.escrow) {
+    bounty.escrow.released = true;
+    bounty.escrow.releasedAt = Date.now();
+    bounty.escrow.releasedTo = bounty.claimedBy;
+  }
+  
   bounty.payment = {
     grossReward,
     fee,
