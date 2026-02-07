@@ -119,7 +119,7 @@ const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 // ============ CONCURRENT CLAIM LIMITS ============
 // Prevents wallet hoarding — temporary until proof of reputation/identity
 // Only counts 'claimed' (not yet submitted) — once you submit, slot frees up
-const MAX_PENDING_CLAIMS = 3; // max bounties claimed but not yet submitted per wallet
+const MAX_PENDING_CLAIMS = 3; // max bounties claimed OR submitted (not yet approved) per wallet
 
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
@@ -1153,16 +1153,16 @@ app.post('/bounties/:id/claim', async (req, res) => {
   }
   
   // Check pending claim limit (anti-hoarding)
-  // Only counts 'claimed' status — once submitted, slot frees up for new claims
+  // Counts both 'claimed' AND 'submitted' — slot only frees up after approval/completion
   const allBounties = await getAllBounties();
   const pendingClaims = allBounties.filter(b => 
     b.claimedBy?.toLowerCase() === address.toLowerCase() && 
-    b.status === 'claimed'  // NOT 'submitted' — those don't block new claims
+    (b.status === 'claimed' || b.status === 'submitted')  // Both statuses count
   );
   if (pendingClaims.length >= MAX_PENDING_CLAIMS) {
     console.log(`[PENDING LIMIT] ${address} has ${pendingClaims.length} pending claims (max ${MAX_PENDING_CLAIMS})`);
     return res.status(429).json({ 
-      error: `You have ${pendingClaims.length} bounties claimed but not submitted. Submit your work before claiming more.`,
+      error: `You have ${pendingClaims.length} bounties in progress (claimed or submitted). Wait for approval before claiming more.`,
       maxPending: MAX_PENDING_CLAIMS,
       pendingBounties: pendingClaims.map(b => ({ id: b.id, title: b.title, status: b.status }))
     });
