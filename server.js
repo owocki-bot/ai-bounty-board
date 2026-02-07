@@ -517,7 +517,7 @@ app.post('/webhooks', (req, res) => {
   const internalKey = req.headers['x-internal-key'];
   
   // Require authentication
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
   
   // For agent-registered webhooks, verify they control the address
   let authenticated = validInternalKey;
@@ -946,7 +946,7 @@ app.get('/mod', async (req, res) => {
       try {
         const res = await fetch('/bounties/' + id + '/reject', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Internal-Key': 'owockibot-dogfood-2026' },
+          headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_KEY },
           body: JSON.stringify({ reason })
         });
         const data = await res.json();
@@ -1430,7 +1430,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
   }
 
   // Require authentication: internal key, mod wallet, or creator signature
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
   const isModApproval = modWallet && isMod(modWallet);
   
   if (!validInternalKey && !isModApproval && !creatorSignature) {
@@ -1682,7 +1682,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
  */
 app.post('/internal/bounties', async (req, res) => {
   const internalKey = req.headers['x-internal-key'];
-  if (internalKey !== process.env.INTERNAL_KEY && internalKey !== 'owockibot-dogfood-2026') {
+  if (internalKey !== process.env.INTERNAL_KEY) {
     return res.status(401).json({ error: 'Invalid internal key' });
   }
 
@@ -1734,7 +1734,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
   }
   
   // Require internal key for rejection
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
   if (!validInternalKey) {
     return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header.' });
   }
@@ -1796,7 +1796,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
  */
 app.patch('/bounties/:id', async (req, res) => {
   const internalKey = req.headers['x-internal-key'];
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
   if (!validInternalKey) {
     return res.status(401).json({ error: 'Admin authentication required. Provide x-internal-key header.' });
   }
@@ -2047,7 +2047,7 @@ app.get('/admin/blocklist', async (req, res) => {
  */
 app.patch('/admin/bounties/:id', async (req, res) => {
   const internalKey = req.headers['x-internal-key'];
-  if (internalKey !== process.env.INTERNAL_KEY && internalKey !== 'owockibot-dogfood-2026') {
+  if (internalKey !== process.env.INTERNAL_KEY) {
     return res.status(401).json({ error: 'Admin auth required' });
   }
   
