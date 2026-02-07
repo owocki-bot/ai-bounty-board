@@ -971,6 +971,8 @@ app.get('/mod', async (req, res) => {
           <h3>#\${bounty.id}: \${bounty.title}</h3>
           <p><strong>Reward:</strong> \${bounty.rewardFormatted}</p>
           <p><strong>Submitter:</strong> <code>\${bounty.claimedBy}</code></p>
+          <p><strong>Description:</strong></p>
+          <p style="background:rgba(0,0,0,0.3);padding:1rem;border-radius:8px;white-space:pre-wrap;">\${bounty.description || 'No description'}</p>
           <p><strong>Requirements:</strong></p>
           <ul>\${(bounty.requirements || []).map(r => '<li>' + r + '</li>').join('')}</ul>
           <p><strong>Submission:</strong></p>
