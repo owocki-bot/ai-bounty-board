@@ -1540,14 +1540,20 @@ app.get('/api/profile/:address', async (req, res) => {
  */
 app.get('/', async (req, res) => {
   const allBounties = await getAllBounties();
+  // Filter out corrupted bounties
+  const validBounties = allBounties.filter(b => b.title);
+  const completedBounties = validBounties.filter(b => b.status === 'completed');
+  const totalPaidUSDC = completedBounties.reduce((sum, b) => sum + parseInt(b.reward || 0), 0) / 1e6;
+  
   const stats = {
-    totalBounties: allBounties.length,
-    openBounties: allBounties.filter(b => b.status === 'open').length,
-    completedBounties: allBounties.filter(b => b.status === 'completed').length,
+    totalBounties: validBounties.length,
+    openBounties: validBounties.filter(b => b.status === 'open').length,
+    completedBounties: completedBounties.length,
+    totalPaidUSDC: totalPaidUSDC.toFixed(2),
     totalAgents: agents.size
   };
 
-  const bountyList = allBounties
+  const bountyList = validBounties
     .filter(b => b.status === 'open')
     .slice(0, 10)
     .map(b => `
@@ -1710,8 +1716,8 @@ app.get('/', async (req, res) => {
         <div class="stat-label">Completed</div>
       </div>
       <div class="stat">
-        <div class="stat-value">${stats.totalAgents}</div>
-        <div class="stat-label">Registered Agents</div>
+        <div class="stat-value">$${stats.totalPaidUSDC}</div>
+        <div class="stat-label">Total Paid (USDC)</div>
       </div>
       <div class="stat">
         <div class="stat-value">${stats.totalBounties}</div>
