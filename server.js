@@ -14,6 +14,18 @@ const reputation = require('./reputation');
 const app = express();
 app.use(cors());
 
+// ============ MOD WALLETS ============
+// Mods can approve submissions (except their own)
+const MOD_WALLETS = [
+  '0x4C3a28d81C52F5cA03cD7E1c8B3C02b396937ADC'.toLowerCase(), // Kevin
+  // Wastelander - TBD (need their wallet)
+  // Note: Mutheu (0x8f69c8eb92ed068aa577ce1847d568b39b0d9ebf) is excluded to avoid conflict of interest
+];
+
+function isMod(address) {
+  return MOD_WALLETS.includes(address?.toLowerCase());
+}
+
 // ============ PAYLOAD SIZE LIMITS ============
 const MAX_JSON_SIZE = '10kb'; // Limit request body size (was 50kb)
 app.use(express.json({ limit: MAX_JSON_SIZE }));
@@ -583,6 +595,40 @@ app.get('/bounties/:id', async (req, res) => {
 });
 
 /**
+ * Mod Review Queue - Get all submitted bounties pending approval
+ * GET /mod/pending
+ */
+app.get('/mod/pending', async (req, res) => {
+  const modWallet = req.query.wallet?.toLowerCase();
+  
+  // Get all submitted bounties
+  const allBounties = await getAllBounties();
+  let pending = allBounties.filter(b => b.status === 'submitted' && b.title);
+  
+  // If mod wallet provided, exclude bounties they submitted (conflict of interest)
+  if (modWallet) {
+    pending = pending.map(b => ({
+      ...b,
+      canApprove: b.claimedBy?.toLowerCase() !== modWallet,
+      conflictReason: b.claimedBy?.toLowerCase() === modWallet ? 'You submitted this bounty' : null
+    }));
+  }
+  
+  // Sort by submission time (oldest first)
+  pending.sort((a, b) => {
+    const aTime = a.submissions?.[a.submissions.length - 1]?.submittedAt || 0;
+    const bTime = b.submissions?.[b.submissions.length - 1]?.submittedAt || 0;
+    return aTime - bTime;
+  });
+  
+  res.json({
+    count: pending.length,
+    pending,
+    modWallet: modWallet || null
+  });
+});
+
+/**
  * Create a new bounty (requires x402 payment)
  * POST /bounties
  */
@@ -872,10 +918,10 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
 /**
  * Approve submission and release payment
  * POST /bounties/:id/approve
- * Requires internal key OR creator signature
+ * Requires internal key OR mod wallet signature
  */
 app.post('/bounties/:id/approve', async (req, res) => {
-  const { creatorSignature } = req.body;
+  const { creatorSignature, modWallet } = req.body;
   const internalKey = req.headers['x-internal-key'];
   const bounty = await getBounty(req.params.id);
   
@@ -886,10 +932,18 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(400).json({ error: 'No submission to approve' });
   }
 
-  // Require authentication: internal key or creator signature
+  // Require authentication: internal key, mod wallet, or creator signature
   const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
-  if (!validInternalKey && !creatorSignature) {
-    return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header or creatorSignature in body.' });
+  const isModApproval = modWallet && isMod(modWallet);
+  
+  if (!validInternalKey && !isModApproval && !creatorSignature) {
+    return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header, modWallet in body (if you are a mod), or creatorSignature.' });
+  }
+  
+  // CONFLICT OF INTEREST CHECK: Approver cannot be the submitter
+  if (modWallet && bounty.claimedBy && modWallet.toLowerCase() === bounty.claimedBy.toLowerCase()) {
+    console.log(`[CONFLICT OF INTEREST] ${modWallet} tried to approve their own submission on bounty #${bounty.id}`);
+    return res.status(403).json({ error: 'Conflict of interest: You cannot approve your own submission. Another mod must review.' });
   }
 
   // Validate submission quality — reject obvious garbage
