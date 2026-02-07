@@ -120,8 +120,8 @@ app.get('/browse', async (req, res) => {
     rewardFormatted: b.rewardFormatted, claimedBy: b.claimedBy, creator: b.creator
   })));
 
-  // Limit visible tags to 8, rest in dropdown
-  const visibleTags = allTags.slice(0, 8);
+  // Limit visible tags to 4, rest in dropdown
+  const visibleTags = allTags.slice(0, 4);
   const hiddenTags = allTags.slice(8);
   
   const filterTagsHtml = visibleTags.map(t => {
