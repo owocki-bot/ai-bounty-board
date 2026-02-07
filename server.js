@@ -1437,11 +1437,10 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
 /**
  * Approve submission and release payment
  * POST /bounties/:id/approve
- * Requires internal key OR mod wallet signature
+ * SECURITY: ONLY mod wallets can approve (human oversight required)
  */
 app.post('/bounties/:id/approve', async (req, res) => {
-  const { creatorSignature, modWallet } = req.body;
-  const internalKey = req.headers['x-internal-key'];
+  const { modWallet } = req.body;
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
@@ -1451,25 +1450,22 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(400).json({ error: 'No submission to approve' });
   }
 
-  // Require authentication: internal key, mod wallet, or creator signature
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
+  // SECURITY: ONLY mod wallets can approve bounties
+  // This prevents API abuse even if internal key is compromised
   const isModApproval = modWallet && isMod(modWallet);
   
-  if (!validInternalKey && !isModApproval && !creatorSignature) {
-    return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header, modWallet in body (if you are a mod), or creatorSignature.' });
+  if (!isModApproval) {
+    console.log(`[APPROVAL DENIED] Bounty #${bounty.id} - non-mod wallet attempted approval: ${modWallet || 'none'}`);
+    return res.status(403).json({ 
+      error: 'Only moderators can approve bounties',
+      message: 'Bounty approvals require human mod review. Internal key and creator approvals are disabled for security.',
+      hint: 'If you are a mod, provide your mod wallet address in the request body as "modWallet".'
+    });
   }
   
   // Track who approved this bounty
-  let approvedBy = 'unknown';
-  if (validInternalKey) {
-    approvedBy = 'internal-key';
-  } else if (isModApproval) {
-    approvedBy = modWallet;
-  } else if (creatorSignature) {
-    approvedBy = 'creator';
-  }
-  
-  console.log(`[APPROVAL] Bounty #${bounty.id} approved by: ${approvedBy}`);
+  const approvedBy = modWallet;
+  console.log(`[APPROVAL] Bounty #${bounty.id} approved by mod: ${approvedBy}`);
   
   // CONFLICT OF INTEREST CHECK: Approver cannot be the submitter
   if (modWallet && bounty.claimedBy && modWallet.toLowerCase() === bounty.claimedBy.toLowerCase()) {
