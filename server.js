@@ -26,6 +26,80 @@ function isMod(address) {
   return MOD_WALLETS.includes(address?.toLowerCase());
 }
 
+// ============ AUTOGRADER ============
+// Checks submission against bounty requirements
+// Returns { score: 0-100, passed: boolean, checks: [...] }
+function autograde(bounty, submission, proof) {
+  const checks = [];
+  const requirements = bounty.requirements || [];
+  const description = bounty.description || '';
+  const content = (submission || '').toLowerCase();
+  const proofUrl = (proof || '').toLowerCase();
+  
+  // If no requirements, pass by default
+  if (requirements.length === 0) {
+    return { score: 100, passed: true, checks: [{ req: 'No specific requirements', met: true }] };
+  }
+  
+  for (const req of requirements) {
+    const reqLower = req.toLowerCase();
+    let met = false;
+    let reason = '';
+    
+    // Check for URL requirements
+    if (reqLower.includes('url') || reqLower.includes('link') || reqLower.includes('published')) {
+      met = content.includes('http') || proofUrl.includes('http');
+      reason = met ? 'URL provided' : 'No URL found';
+    }
+    // Check for word count requirements
+    else if (reqLower.match(/(\d+)\+?\s*words?/)) {
+      const wordCount = parseInt(reqLower.match(/(\d+)/)[1]);
+      const actualWords = content.split(/\s+/).filter(w => w.length > 0).length;
+      met = actualWords >= wordCount * 0.8; // Allow 20% tolerance
+      reason = `${actualWords} words (need ${wordCount})`;
+    }
+    // Check for minute/time requirements
+    else if (reqLower.match(/(\d+)\+?\s*min/)) {
+      // Can't verify video length automatically - flag for manual review
+      met = proofUrl.includes('youtube') || proofUrl.includes('loom') || proofUrl.includes('vimeo');
+      reason = met ? 'Video platform detected' : 'No video URL found';
+    }
+    // Check for platform requirements (YouTube, GitHub, etc.)
+    else if (reqLower.includes('youtube')) {
+      met = content.includes('youtube.com') || content.includes('youtu.be') || proofUrl.includes('youtube');
+      reason = met ? 'YouTube link found' : 'No YouTube link';
+    }
+    else if (reqLower.includes('github')) {
+      met = content.includes('github.com') || proofUrl.includes('github');
+      reason = met ? 'GitHub link found' : 'No GitHub link';
+    }
+    else if (reqLower.includes('moltbook')) {
+      met = content.includes('moltbook') || proofUrl.includes('moltbook');
+      reason = met ? 'Moltbook link found' : 'No Moltbook link';
+    }
+    // Check for screenshot/image requirements
+    else if (reqLower.includes('screenshot') || reqLower.includes('image')) {
+      met = content.includes('.png') || content.includes('.jpg') || content.includes('.gif') || content.includes('imgur');
+      reason = met ? 'Image reference found' : 'No image found';
+    }
+    // Default: check if requirement keywords are mentioned in submission
+    else {
+      const keywords = reqLower.split(/\s+/).filter(w => w.length > 3);
+      const matchedKeywords = keywords.filter(kw => content.includes(kw));
+      met = matchedKeywords.length >= keywords.length * 0.5;
+      reason = met ? 'Relevant content found' : 'Missing key content';
+    }
+    
+    checks.push({ req, met, reason });
+  }
+  
+  const metCount = checks.filter(c => c.met).length;
+  const score = Math.round((metCount / checks.length) * 100);
+  const passed = score >= 90; // 90% threshold for auto-pass
+  
+  return { score, passed, checks, metCount, totalReqs: checks.length };
+}
+
 // ============ PAYLOAD SIZE LIMITS ============
 const MAX_JSON_SIZE = '10kb'; // Limit request body size (was 50kb)
 app.use(express.json({ limit: MAX_JSON_SIZE }));
@@ -842,20 +916,39 @@ app.post('/bounties/:id/submit', async (req, res) => {
     });
   }
 
+  // ============ AUTOGRADER CHECK ============
+  const gradeResult = autograde(bounty, submission, proof);
+  console.log(`[AUTOGRADER] Bounty #${bounty.id}: Score ${gradeResult.score}% (${gradeResult.metCount}/${gradeResult.totalReqs} requirements)`);
+  
+  // Auto-reject if <90% requirements met
+  if (!gradeResult.passed) {
+    const failedChecks = gradeResult.checks.filter(c => !c.met);
+    console.log(`[AUTO-REJECTED] Bounty #${bounty.id} submission from ${address}: Score ${gradeResult.score}% < 90%`);
+    return res.status(400).json({
+      error: 'Submission does not meet enough requirements',
+      score: gradeResult.score,
+      threshold: 90,
+      failedRequirements: failedChecks.map(c => ({ requirement: c.req, reason: c.reason })),
+      hint: 'Please ensure your submission addresses all requirements before resubmitting.'
+    });
+  }
+
   if (!bounty.submissions) bounty.submissions = [];
   bounty.submissions.push({
     id: uuidv4(),
     content: submission,
     proof: proof || null,
-    submittedAt: Date.now()
+    submittedAt: Date.now(),
+    autogradeScore: gradeResult.score,
+    autogradeChecks: gradeResult.checks
   });
   bounty.status = 'submitted';
   bounty.updatedAt = Date.now();
 
   const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${address}`);
+  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${address} (autograder: ${gradeResult.score}%)`);
   
-  res.json(updated);
+  res.json({ ...updated, autogradeScore: gradeResult.score });
 });
 
 /**
