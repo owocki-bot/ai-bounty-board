@@ -5,8 +5,13 @@
 function registerBrowseHandler(app, getAllBounties) {
 
 app.get('/browse', async (req, res) => {
-  const { status, tag } = req.query;
+  try {
+  const { status, tag, page = 1 } = req.query;
+  const perPage = 15; // Limit to 15 bounties per page for faster loading
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  
   let allBounties = await getAllBounties();
+  console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
 
   if (status && status !== 'all') {
     allBounties = allBounties.filter(b => b.status === status);
@@ -16,6 +21,12 @@ app.get('/browse', async (req, res) => {
   }
 
   allBounties.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  
+  // Pagination
+  const totalBounties = allBounties.length;
+  const totalPages = Math.ceil(totalBounties / perPage);
+  const startIdx = (pageNum - 1) * perPage;
+  const paginatedBounties = allBounties.slice(startIdx, startIdx + perPage);
 
   const allTags = [...new Set(allBounties.flatMap(b => b.tags || []))];
 
@@ -27,7 +38,8 @@ app.get('/browse', async (req, res) => {
   };
 
   function esc(str) {
-    return (str || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    if (typeof str !== 'string') str = String(str || '');
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
   const statusColors = {
@@ -35,7 +47,7 @@ app.get('/browse', async (req, res) => {
     completed: '#8b5cf6', cancelled: '#ef4444'
   };
 
-  const bountyCards = allBounties.map(b => {
+  const bountyCards = paginatedBounties.map(b => {
     const subs = (b.submissions || []);
     const tagsHtml = (b.tags || []).map(t => '<a href="/browse?tag=' + t + '" class="tag">#' + esc(t) + '</a>').join(' ');
     const reqsHtml = (b.requirements && b.requirements.length > 0)
@@ -101,8 +113,30 @@ app.get('/browse', async (req, res) => {
     return '<a href="' + href + '" class="filter-btn' + isActive + '">#' + esc(t) + '</a>';
   }).join('');
 
-  const gridHtml = allBounties.length > 0
-    ? '<div class="bounties-grid">' + bountyCards + '</div>'
+  // Build pagination controls
+  const buildPageUrl = (p) => {
+    const params = new URLSearchParams();
+    if (status) params.set('status', status);
+    if (tag) params.set('tag', tag);
+    params.set('page', p);
+    return '/browse?' + params.toString();
+  };
+  
+  let paginationHtml = '';
+  if (totalPages > 1) {
+    paginationHtml = '<div class="pagination">';
+    if (pageNum > 1) {
+      paginationHtml += '<a href="' + buildPageUrl(pageNum - 1) + '" class="page-btn">← Prev</a>';
+    }
+    paginationHtml += '<span class="page-info">Page ' + pageNum + ' of ' + totalPages + ' (' + totalBounties + ' bounties)</span>';
+    if (pageNum < totalPages) {
+      paginationHtml += '<a href="' + buildPageUrl(pageNum + 1) + '" class="page-btn">Next →</a>';
+    }
+    paginationHtml += '</div>';
+  }
+
+  const gridHtml = paginatedBounties.length > 0
+    ? '<div class="bounties-grid">' + bountyCards + '</div>' + paginationHtml
     : '<div class="empty-state"><h2>No bounties found</h2><p>Try adjusting your filters or check back later.</p></div>';
 
   const statusFilterActive = (s) => (!status || status === 'all') && s === 'all' || status === s ? ' active' : '';
@@ -206,6 +240,10 @@ app.get('/browse', async (req, res) => {
     '.toast.show { opacity: 1; transform: translateY(0); }\n' +
     '.toast-success { background: #10b981; }\n' +
     '.toast-error { background: #ef4444; }\n' +
+    '.pagination { display: flex; justify-content: center; align-items: center; gap: 1rem; padding: 2rem 0; flex-wrap: wrap; }\n' +
+    '.page-btn { background: linear-gradient(90deg, #00d4ff, #7b2cbf); color: #fff; padding: 0.75rem 1.5rem; border-radius: 8px; text-decoration: none; font-weight: bold; transition: opacity 0.2s; }\n' +
+    '.page-btn:hover { opacity: 0.8; }\n' +
+    '.page-info { color: #888; font-size: 0.9rem; }\n' +
     '@media (max-width: 480px) { .bounties-grid { grid-template-columns: 1fr; } .navbar { padding: 1rem; } .container { padding: 1rem; } .wallet-bar { flex-direction: column; align-items: stretch; } .wallet-bar input[type="text"] { width: 100%; } }\n' +
     '</style>\n</head>\n<body>\n' +
     '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/stats">Stats</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
@@ -455,6 +493,94 @@ app.get('/browse', async (req, res) => {
     '<script src="https://stats.owockibot.xyz/pixel.js" defer></script>\n' +
     '</body></html>'
   );
+  } catch (err) {
+    console.error('[BROWSE] Error:', err);
+    res.status(500).send('<!DOCTYPE html><html><body><h1>Error loading bounties</h1><p>' + err.message + '</p><p><a href="/">Go home</a></p></body></html>');
+  }
+});
+
+// Individual bounty detail page
+app.get('/bounty/:id', async (req, res) => {
+  try {
+    const bountyId = req.params.id;
+    const allBounties = await getAllBounties();
+    const bounty = allBounties.find(b => String(b.id) === String(bountyId));
+    
+    if (!bounty) {
+      return res.status(404).send('<!DOCTYPE html><html><head><title>Bounty Not Found</title><meta http-equiv="refresh" content="2;url=/browse"></head><body style="font-family:system-ui;background:#0a0a0a;color:#fff;padding:2rem;text-align:center;"><h1>Bounty #' + bountyId + ' not found</h1><p>Redirecting to bounty board...</p></body></html>');
+    }
+    
+    function esc(str) {
+      if (typeof str !== 'string') str = String(str || '');
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+    
+    const statusColors = { open: '#10b981', claimed: '#f59e0b', submitted: '#3b82f6', completed: '#8b5cf6', cancelled: '#ef4444' };
+    const statusColor = statusColors[bounty.status] || '#666';
+    const reward = bounty.rewardFormatted || ((bounty.reward / 1e6) + ' USDC');
+    
+    res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Bounty #${bounty.id}: ${esc(bounty.title)} | owockibot</title>
+  <meta name="description" content="${esc((bounty.description || '').slice(0, 160))}">
+  <meta property="og:title" content="Bounty #${bounty.id}: ${esc(bounty.title)}">
+  <meta property="og:description" content="${reward} reward — ${esc((bounty.description || '').slice(0, 200))}">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e5e5e5; line-height: 1.6; padding: 2rem; max-width: 800px; margin: 0 auto; }
+    a { color: #ffb74d; }
+    .back { margin-bottom: 1rem; display: inline-block; opacity: 0.7; }
+    .back:hover { opacity: 1; }
+    .card { background: #1a1a1a; border-radius: 12px; padding: 2rem; border: 1px solid #333; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    h1 { font-size: 1.5rem; color: #fff; }
+    .status { padding: 0.25rem 0.75rem; border-radius: 999px; font-size: 0.875rem; font-weight: 600; background: ${statusColor}22; color: ${statusColor}; }
+    .reward { font-size: 1.5rem; color: #ffb74d; font-weight: 700; margin: 1rem 0; }
+    .desc { color: #999; margin: 1rem 0; white-space: pre-wrap; }
+    .meta { display: grid; gap: 0.5rem; margin-top: 1.5rem; font-size: 0.875rem; color: #666; }
+    .meta-item { display: flex; gap: 0.5rem; }
+    .meta-label { color: #888; min-width: 100px; }
+    .tags { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+    .tag { background: #333; color: #aaa; padding: 0.25rem 0.5rem; border-radius: 4px; font-size: 0.75rem; }
+    .actions { margin-top: 2rem; display: flex; gap: 1rem; }
+    .btn { padding: 0.75rem 1.5rem; border-radius: 8px; font-weight: 600; text-decoration: none; display: inline-block; }
+    .btn-primary { background: #ffb74d; color: #000; }
+    .btn-secondary { background: #333; color: #fff; }
+    .payment { margin-top: 1.5rem; padding: 1rem; background: #10b98122; border-radius: 8px; border: 1px solid #10b981; }
+    .payment-title { color: #10b981; font-weight: 600; margin-bottom: 0.5rem; }
+  </style>
+</head>
+<body>
+  <a href="/browse" class="back">← Back to all bounties</a>
+  <div class="card">
+    <div class="header">
+      <h1>Bounty #${bounty.id}: ${esc(bounty.title)}</h1>
+      <span class="status">${bounty.status}</span>
+    </div>
+    <div class="reward">💰 ${reward}</div>
+    <div class="desc">${esc(bounty.description || 'No description')}</div>
+    ${bounty.tags && bounty.tags.length ? `<div class="tags">${bounty.tags.map(t => `<span class="tag">${esc(t)}</span>`).join('')}</div>` : ''}
+    <div class="meta">
+      ${bounty.creator ? `<div class="meta-item"><span class="meta-label">Creator:</span> ${esc(bounty.creator.slice(0,8))}...</div>` : ''}
+      ${bounty.claimedBy ? `<div class="meta-item"><span class="meta-label">Claimed by:</span> ${esc(bounty.claimedBy.slice(0,8))}...</div>` : ''}
+      ${bounty.createdAt ? `<div class="meta-item"><span class="meta-label">Created:</span> ${new Date(bounty.createdAt).toLocaleDateString()}</div>` : ''}
+      ${bounty.submissionUrl ? `<div class="meta-item"><span class="meta-label">Submission:</span> <a href="${esc(bounty.submissionUrl)}" target="_blank">${esc(bounty.submissionUrl.slice(0, 50))}...</a></div>` : ''}
+    </div>
+    ${bounty.payment ? '<div class="payment"><div class="payment-title">✅ Payment Complete</div><div class="meta-item"><span class="meta-label">Amount:</span> ' + (bounty.payment.netRewardFormatted || (((bounty.payment.netReward || 0) / 1e6).toFixed(2) + ' USDC')) + '</div>' + (bounty.payment.txHash ? '<div class="meta-item"><span class="meta-label">TX:</span> <a href="https://basescan.org/tx/' + bounty.payment.txHash + '" target="_blank">' + bounty.payment.txHash.slice(0,16) + '...</a></div>' : '') + '</div>' : ''}
+    <div class="actions">
+      ${bounty.status === 'open' ? `<a href="/browse" class="btn btn-primary">Claim This Bounty</a>` : ''}
+      <a href="/browse" class="btn btn-secondary">View All Bounties</a>
+    </div>
+  </div>
+</body>
+</html>`);
+  } catch (err) {
+    console.error('[BOUNTY DETAIL] Error:', err);
+    res.status(500).send('Error: ' + err.message);
+  }
 });
 
 }

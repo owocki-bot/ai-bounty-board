@@ -14,6 +14,44 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ============ RATE LIMITING ============
+const rateLimits = new Map(); // address -> { count, windowStart }
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
+const RATE_LIMIT_MAX_CLAIMS = 3; // max 3 claims per minute per address
+const RATE_LIMIT_MAX_SUBMISSIONS = 5; // max 5 submissions per minute
+
+function checkRateLimit(address, action = 'claim') {
+  const key = `${address.toLowerCase()}:${action}`;
+  const now = Date.now();
+  const limit = action === 'claim' ? RATE_LIMIT_MAX_CLAIMS : RATE_LIMIT_MAX_SUBMISSIONS;
+  
+  let entry = rateLimits.get(key);
+  
+  // Reset window if expired
+  if (!entry || (now - entry.windowStart) > RATE_LIMIT_WINDOW_MS) {
+    entry = { count: 0, windowStart: now };
+  }
+  
+  if (entry.count >= limit) {
+    const retryAfter = Math.ceil((entry.windowStart + RATE_LIMIT_WINDOW_MS - now) / 1000);
+    return { allowed: false, retryAfter };
+  }
+  
+  entry.count++;
+  rateLimits.set(key, entry);
+  return { allowed: true };
+}
+
+// Clean up old rate limit entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimits) {
+    if ((now - entry.windowStart) > RATE_LIMIT_WINDOW_MS * 2) {
+      rateLimits.delete(key);
+    }
+  }
+}, 60000);
+
 // ============ SUPABASE PERSISTENCE ============
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://toofwveskfzruckkvqwv.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -88,6 +126,78 @@ async function updateBounty(id, bounty) {
     });
     if (result?.[0]) return { id: result[0].id.toString(), ...result[0].data };
   }
+  bountiesMemory.set(id, bounty);
+  return bounty;
+}
+
+/**
+ * Atomic claim with race condition protection
+ * Uses conditional update: only succeeds if status is still 'open'
+ * Returns null if claim failed (already claimed by someone else)
+ */
+async function atomicClaim(id, claimerAddress) {
+  const numId = parseInt(id);
+  if (!isNaN(numId) && SUPABASE_KEY) {
+    // Supabase: Use RPC or conditional PATCH with status check
+    // PostgREST doesn't support true transactions, but we can use
+    // a conditional update that only succeeds if status matches
+    const now = Date.now();
+    const url = `${SUPABASE_URL}/rest/v1/bounties?id=eq.${numId}&data->>status=eq.open`;
+    
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: JSON.stringify({
+        data: {
+          status: 'claimed',
+          claimedBy: claimerAddress.toLowerCase(),
+          claimedAt: now,
+          updatedAt: now
+        }
+      })
+    });
+    
+    if (!response.ok) {
+      console.error(`[ATOMIC CLAIM] DB error: ${response.status}`);
+      return null;
+    }
+    
+    const result = await response.json();
+    
+    // If no rows updated, the bounty wasn't in 'open' status
+    if (!result || result.length === 0) {
+      console.log(`[ATOMIC CLAIM] Race condition prevented - bounty ${id} already claimed`);
+      return null;
+    }
+    
+    // Need to merge with existing data
+    const existing = await getBounty(id);
+    const merged = { 
+      ...existing, 
+      status: 'claimed', 
+      claimedBy: claimerAddress.toLowerCase(),
+      claimedAt: now,
+      updatedAt: now
+    };
+    
+    console.log(`[ATOMIC CLAIM] Bounty ${id} atomically claimed by ${claimerAddress}`);
+    return merged;
+  }
+  
+  // Fallback for memory-only mode (still has race condition but logs warning)
+  console.warn(`[ATOMIC CLAIM] Using non-atomic fallback for bounty ${id}`);
+  const bounty = bountiesMemory.get(id);
+  if (!bounty || bounty.status !== 'open') return null;
+  
+  bounty.status = 'claimed';
+  bounty.claimedBy = claimerAddress.toLowerCase();
+  bounty.claimedAt = Date.now();
+  bounty.updatedAt = Date.now();
   bountiesMemory.set(id, bounty);
   return bounty;
 }
@@ -452,33 +562,51 @@ async function isBlocklisted(address) {
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address } = req.body;
   
-  // Check blocklist first
+  if (!address) {
+    return res.status(400).json({ error: 'address required' });
+  }
+  
+  // Rate limit check
+  const rateCheck = checkRateLimit(address, 'claim');
+  if (!rateCheck.allowed) {
+    console.log(`[RATE LIMITED] ${address} hit claim rate limit`);
+    return res.status(429).json({ 
+      error: 'Too many claims. Please wait before trying again.',
+      retryAfter: rateCheck.retryAfter
+    });
+  }
+  
+  // Check blocklist
   if (await isBlocklisted(address)) {
     console.log(`[BLOCKED] ${address} attempted to claim bounty but is blocklisted`);
     return res.status(403).json({ error: 'This wallet has been blocklisted for abuse' });
   }
   
+  // Check bounty exists before atomic claim
   const bounty = await getBounty(req.params.id);
-  
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (bounty.status !== 'open') {
+  
+  // Use atomic claim to prevent race conditions
+  const claimed = await atomicClaim(req.params.id, address);
+  
+  if (!claimed) {
+    // Atomic claim failed - bounty was already claimed or status changed
+    const current = await getBounty(req.params.id);
+    if (current?.status === 'claimed') {
+      console.log(`[CLAIM RACE] ${address} lost race for bounty ${req.params.id} to ${current.claimedBy}`);
+      return res.status(409).json({ 
+        error: 'Bounty was just claimed by another user',
+        claimedBy: current.claimedBy,
+        claimedAt: current.claimedAt
+      });
+    }
     return res.status(400).json({ error: 'Bounty is not open for claims' });
   }
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
-  }
-
-  bounty.status = 'claimed';
-  bounty.claimedBy = address.toLowerCase();
-  bounty.claimedAt = Date.now();
-  bounty.updatedAt = Date.now();
-
-  const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[BOUNTY CLAIMED] ${bounty.id} claimed by ${address}`);
   
-  res.json(updated);
+  console.log(`[BOUNTY CLAIMED] ${req.params.id} claimed by ${address} (atomic)`);
+  res.json(claimed);
 });
 
 /**
@@ -487,6 +615,21 @@ app.post('/bounties/:id/claim', async (req, res) => {
  */
 app.post('/bounties/:id/submit', async (req, res) => {
   const { address, submission, proof } = req.body;
+  
+  if (!address) {
+    return res.status(400).json({ error: 'address required' });
+  }
+  
+  // Rate limit check
+  const rateCheck = checkRateLimit(address, 'submit');
+  if (!rateCheck.allowed) {
+    console.log(`[RATE LIMITED] ${address} hit submit rate limit`);
+    return res.status(429).json({ 
+      error: 'Too many submissions. Please wait before trying again.',
+      retryAfter: rateCheck.retryAfter
+    });
+  }
+  
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
