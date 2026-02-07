@@ -669,6 +669,281 @@ app.get('/bounties/:id', async (req, res) => {
 });
 
 /**
+ * Mod Dashboard UI
+ * GET /mod
+ */
+app.get('/mod', async (req, res) => {
+  const allBounties = await getAllBounties();
+  const pending = allBounties.filter(b => b.status === 'submitted' && b.title);
+  
+  // Sort by submission time (oldest first)
+  pending.sort((a, b) => {
+    const aTime = a.submissions?.[a.submissions.length - 1]?.submittedAt || 0;
+    const bTime = b.submissions?.[b.submissions.length - 1]?.submittedAt || 0;
+    return aTime - bTime;
+  });
+  
+  const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+  
+  const pendingRows = pending.map(b => {
+    const lastSub = b.submissions?.[b.submissions.length - 1];
+    const score = lastSub?.autogradeScore || '?';
+    const submittedAt = lastSub?.submittedAt ? new Date(lastSub.submittedAt).toLocaleString() : 'Unknown';
+    const reward = (parseInt(b.reward || 0) / 1e6).toFixed(2);
+    
+    return `
+      <tr data-id="${esc(b.id)}" data-claimer="${esc(b.claimedBy || '')}">
+        <td><strong>#${esc(b.id)}</strong></td>
+        <td>${esc(b.title?.slice(0, 40))}${b.title?.length > 40 ? '...' : ''}</td>
+        <td>$${reward}</td>
+        <td><code>${esc(b.claimedBy?.slice(0,6))}...${esc(b.claimedBy?.slice(-4))}</code></td>
+        <td>${score}%</td>
+        <td>${submittedAt}</td>
+        <td>
+          <button class="btn-approve" onclick="approveBounty('${esc(b.id)}')">✅ Approve</button>
+          <button class="btn-reject" onclick="rejectBounty('${esc(b.id)}')">❌ Reject</button>
+          <button class="btn-view" onclick="viewSubmission('${esc(b.id)}')">👁️ View</button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+  
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mod Dashboard | Bounty Board</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0a0a1a 0%, #1a1a3a 100%);
+      color: #fff;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
+    h1 span { color: #00d4ff; }
+    .subtitle { color: #888; margin-bottom: 1.5rem; }
+    
+    .wallet-bar {
+      display: flex; align-items: center; gap: 1rem;
+      background: rgba(255,255,255,0.05);
+      padding: 1rem; border-radius: 12px; margin-bottom: 1.5rem;
+    }
+    .wallet-bar input {
+      flex: 1; background: rgba(0,0,0,0.3);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px; padding: 0.75rem; color: #fff;
+    }
+    .wallet-bar button {
+      background: linear-gradient(135deg, #00d4ff, #0099cc);
+      border: none; border-radius: 8px; padding: 0.75rem 1.5rem;
+      color: #000; font-weight: 600; cursor: pointer;
+    }
+    
+    .stats {
+      display: flex; gap: 1rem; margin-bottom: 1.5rem;
+    }
+    .stat {
+      background: rgba(0,212,255,0.1);
+      padding: 1rem 1.5rem; border-radius: 12px;
+    }
+    .stat-value { font-size: 1.5rem; font-weight: bold; color: #00d4ff; }
+    .stat-label { font-size: 0.85rem; color: #888; }
+    
+    table { width: 100%; border-collapse: collapse; background: rgba(255,255,255,0.03); border-radius: 12px; overflow: hidden; }
+    th, td { padding: 1rem; text-align: left; border-bottom: 1px solid rgba(255,255,255,0.1); }
+    th { background: rgba(0,0,0,0.2); color: #888; font-weight: 500; font-size: 0.85rem; }
+    tr:hover { background: rgba(255,255,255,0.05); }
+    
+    .btn-approve, .btn-reject, .btn-view {
+      padding: 0.4rem 0.8rem; border-radius: 6px; border: none;
+      cursor: pointer; font-size: 0.85rem; margin-right: 0.25rem;
+    }
+    .btn-approve { background: rgba(0,200,100,0.2); color: #4ade80; }
+    .btn-approve:hover { background: rgba(0,200,100,0.3); }
+    .btn-reject { background: rgba(255,100,100,0.2); color: #ff6b6b; }
+    .btn-reject:hover { background: rgba(255,100,100,0.3); }
+    .btn-view { background: rgba(255,255,255,0.1); color: #fff; }
+    .btn-view:hover { background: rgba(255,255,255,0.2); }
+    
+    .conflict { opacity: 0.5; }
+    .conflict .btn-approve { display: none; }
+    
+    .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.8); justify-content: center; align-items: center; z-index: 100; }
+    .modal.active { display: flex; }
+    .modal-content { background: #1a1a3a; border-radius: 16px; padding: 2rem;
+      max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal-close { float: right; background: none; border: none; color: #888;
+      font-size: 1.5rem; cursor: pointer; }
+    .modal h3 { margin-bottom: 1rem; }
+    .modal pre { background: rgba(0,0,0,0.3); padding: 1rem; border-radius: 8px;
+      overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    
+    .toast { position: fixed; bottom: 2rem; right: 2rem; padding: 1rem 1.5rem;
+      background: #4ade80; color: #000; border-radius: 8px; display: none; }
+    .toast.error { background: #ff6b6b; }
+    .toast.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🛡️ <span>Mod</span> Dashboard</h1>
+    <p class="subtitle">Review and approve bounty submissions</p>
+    
+    <div class="wallet-bar">
+      <span>Your wallet:</span>
+      <input type="text" id="mod-wallet" placeholder="0x... (paste your mod wallet)">
+      <button onclick="setModWallet()">Connect</button>
+    </div>
+    
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value">${pending.length}</div>
+        <div class="stat-label">Pending Review</div>
+      </div>
+    </div>
+    
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Title</th>
+          <th>Reward</th>
+          <th>Submitter</th>
+          <th>Score</th>
+          <th>Submitted</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="pending-table">
+        ${pendingRows || '<tr><td colspan="7" style="text-align:center;color:#888;">No pending submissions</td></tr>'}
+      </tbody>
+    </table>
+  </div>
+  
+  <div class="modal" id="modal">
+    <div class="modal-content">
+      <button class="modal-close" onclick="closeModal()">&times;</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+  
+  <div class="toast" id="toast"></div>
+  
+  <script>
+    let modWallet = localStorage.getItem('modWallet') || '';
+    if (modWallet) document.getElementById('mod-wallet').value = modWallet;
+    
+    function setModWallet() {
+      modWallet = document.getElementById('mod-wallet').value.trim().toLowerCase();
+      localStorage.setItem('modWallet', modWallet);
+      highlightConflicts();
+      showToast('Wallet set!');
+    }
+    
+    function highlightConflicts() {
+      document.querySelectorAll('#pending-table tr').forEach(row => {
+        const claimer = row.dataset.claimer?.toLowerCase();
+        if (claimer && claimer === modWallet) {
+          row.classList.add('conflict');
+          row.title = 'Conflict of interest - you cannot approve your own submission';
+        } else {
+          row.classList.remove('conflict');
+        }
+      });
+    }
+    highlightConflicts();
+    
+    async function approveBounty(id) {
+      if (!modWallet) { showToast('Set your wallet first', true); return; }
+      if (!confirm('Approve this submission and release payment?')) return;
+      
+      try {
+        const res = await fetch('/bounties/' + id + '/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ modWallet })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast('Approved! Payment queued.');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showToast(data.error || 'Failed', true);
+        }
+      } catch (e) {
+        showToast('Error: ' + e.message, true);
+      }
+    }
+    
+    async function rejectBounty(id) {
+      const reason = prompt('Rejection reason:');
+      if (!reason) return;
+      
+      try {
+        const res = await fetch('/bounties/' + id + '/reject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Internal-Key': 'owockibot-dogfood-2026' },
+          body: JSON.stringify({ reason })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast('Rejected.');
+          setTimeout(() => location.reload(), 1500);
+        } else {
+          showToast(data.error || 'Failed', true);
+        }
+      } catch (e) {
+        showToast('Error: ' + e.message, true);
+      }
+    }
+    
+    async function viewSubmission(id) {
+      try {
+        const res = await fetch('/bounties/' + id);
+        const bounty = await res.json();
+        const lastSub = bounty.submissions?.[bounty.submissions.length - 1];
+        
+        document.getElementById('modal-body').innerHTML = \`
+          <h3>#\${bounty.id}: \${bounty.title}</h3>
+          <p><strong>Reward:</strong> \${bounty.rewardFormatted}</p>
+          <p><strong>Submitter:</strong> <code>\${bounty.claimedBy}</code></p>
+          <p><strong>Requirements:</strong></p>
+          <ul>\${(bounty.requirements || []).map(r => '<li>' + r + '</li>').join('')}</ul>
+          <p><strong>Submission:</strong></p>
+          <pre>\${lastSub?.content || 'No content'}</pre>
+          <p><strong>Proof:</strong> \${lastSub?.proof ? '<a href="' + lastSub.proof + '" target="_blank">' + lastSub.proof + '</a>' : 'None'}</p>
+          <p><strong>Autograde Score:</strong> \${lastSub?.autogradeScore || '?'}%</p>
+        \`;
+        document.getElementById('modal').classList.add('active');
+      } catch (e) {
+        showToast('Error loading bounty', true);
+      }
+    }
+    
+    function closeModal() {
+      document.getElementById('modal').classList.remove('active');
+    }
+    
+    function showToast(msg, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.textContent = msg;
+      toast.className = 'toast active' + (isError ? ' error' : '');
+      setTimeout(() => toast.classList.remove('active'), 3000);
+    }
+  </script>
+</body>
+</html>
+  `);
+});
+
+/**
  * Mod Review Queue - Get all submitted bounties pending approval
  * GET /mod/pending
  */
