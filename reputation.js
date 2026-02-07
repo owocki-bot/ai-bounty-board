@@ -26,6 +26,10 @@ const KNOWN_AGENTS = {
   '0x155f202a210c6f97c8094290ab12113e06000f54': 2112, // RegenClaw
 };
 
+// Wallets that own agents - can't rate agents they own (self-feedback blocked by ERC-8004)
+const OWOCKIBOT_WALLET = '0xec9d3032e62f68554a87d13bf60665e5b75d43dc';
+const OWNED_AGENTS = new Set([2108, 2110, 2111, 2112]); // All currently owned by owockibot
+
 let provider = null;
 let wallet = null;
 let reputationContract = null;
@@ -97,6 +101,12 @@ async function postBountyReputation(walletAddress, value = 100, tag1 = 'bounty-c
   if (!agentId) {
     console.log(`[REPUTATION] Skipping - no agent ID for wallet ${walletAddress}`);
     return { success: false, reason: 'no-agent-id', wallet: walletAddress };
+  }
+  
+  // Check for self-feedback (ERC-8004 blocks feedback to agents owned by the sender)
+  if (wallet && wallet.address.toLowerCase() === OWOCKIBOT_WALLET && OWNED_AGENTS.has(agentId)) {
+    console.log(`[REPUTATION] Skipping - self-feedback blocked (agent ${agentId} owned by sender)`);
+    return { success: false, reason: 'self-feedback-blocked', agentId };
   }
   
   try {
