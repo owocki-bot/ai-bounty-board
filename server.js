@@ -9,21 +9,30 @@ const express = require('express');
 const cors = require('cors');
 const { v4: uuidv4 } = require('uuid');
 const { ethers } = require('ethers');
+const reputation = require('./reputation');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+
+// ============ PAYLOAD SIZE LIMITS ============
+const MAX_JSON_SIZE = '50kb'; // Limit request body size
+app.use(express.json({ limit: MAX_JSON_SIZE }));
+
+// Block oversized submissions at route level
+const MAX_SUBMISSION_LENGTH = 10000; // 10KB text limit for submission content
 
 // ============ RATE LIMITING ============
 const rateLimits = new Map(); // address -> { count, windowStart }
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute window
 const RATE_LIMIT_MAX_CLAIMS = 3; // max 3 claims per minute per address
 const RATE_LIMIT_MAX_SUBMISSIONS = 5; // max 5 submissions per minute
+const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
   const now = Date.now();
-  const limit = action === 'claim' ? RATE_LIMIT_MAX_CLAIMS : RATE_LIMIT_MAX_SUBMISSIONS;
+  const limits = { claim: RATE_LIMIT_MAX_CLAIMS, submit: RATE_LIMIT_MAX_SUBMISSIONS, create: RATE_LIMIT_MAX_CREATES };
+  const limit = limits[action] || RATE_LIMIT_MAX_CLAIMS;
   
   let entry = rateLimits.get(key);
   
@@ -503,6 +512,16 @@ app.get('/bounties/:id', async (req, res) => {
 app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (req, res) => {
   const { title, description, reward, tags, deadline, requirements } = req.body;
   
+  // Rate limit bounty creation
+  const rateCheck = checkRateLimit(req.payer, 'create');
+  if (!rateCheck.allowed) {
+    console.log(`[RATE LIMITED] ${req.payer} hit bounty creation rate limit`);
+    return res.status(429).json({ 
+      error: 'Too many bounty creations. Please wait before trying again.',
+      retryAfter: rateCheck.retryAfter
+    });
+  }
+  
   if (!title || !description || !reward) {
     return res.status(400).json({ error: 'title, description, and reward required' });
   }
@@ -560,10 +579,15 @@ async function isBlocklisted(address) {
  * POST /bounties/:id/claim
  */
 app.post('/bounties/:id/claim', async (req, res) => {
-  const { address } = req.body;
+  const { address, agentId } = req.body;
   
   if (!address) {
     return res.status(400).json({ error: 'address required' });
+  }
+  
+  // Register ERC-8004 agent ID if provided
+  if (agentId && Number.isInteger(Number(agentId))) {
+    reputation.registerAgent(address, Number(agentId));
   }
   
   // Rate limit check
@@ -640,6 +664,17 @@ app.post('/bounties/:id/submit', async (req, res) => {
   }
   if (!submission) {
     return res.status(400).json({ error: 'submission required' });
+  }
+  
+  // Payload size check
+  const submissionLength = typeof submission === 'string' ? submission.length : JSON.stringify(submission).length;
+  if (submissionLength > MAX_SUBMISSION_LENGTH) {
+    console.log(`[BLOCKED] Oversized submission from ${address}: ${submissionLength} bytes`);
+    return res.status(413).json({ 
+      error: 'Submission too large',
+      maxLength: MAX_SUBMISSION_LENGTH,
+      yourLength: submissionLength
+    });
   }
 
   if (!bounty.submissions) bounty.submissions = [];
@@ -874,13 +909,28 @@ app.post('/bounties/:id/approve', async (req, res) => {
     token: 'USDC'
   };
 
-  // Update agent reputation
+  // Update agent reputation (in-memory)
   const agent = agents.get(bounty.claimedBy);
   if (agent) {
     agent.reputation += 10;
     agent.completedBounties += 1;
     agent.totalEarned = (agent.totalEarned || 0) + netReward;
   }
+
+  // Post ERC-8004 reputation (non-blocking)
+  reputation.postBountyReputation(
+    bounty.claimedBy,
+    100, // Success = 100
+    'bounty-completed',
+    `reward-${(netReward / 1e6).toFixed(0)}`,
+    `https://bounty.owockibot.xyz/bounties/${bounty.id}`
+  ).then(result => {
+    if (result.success) {
+      console.log(`[ERC-8004] Reputation posted for bounty ${bounty.id}: agent ${result.agentId}, tx ${result.txHash}`);
+    }
+  }).catch(err => {
+    console.log(`[ERC-8004] Reputation post skipped: ${err.message}`);
+  });
 
   // Save to database
   await updateBounty(bounty.id, bounty);
