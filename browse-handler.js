@@ -122,7 +122,7 @@ app.get('/browse', async (req, res) => {
 
   // Limit visible tags to 4, rest in dropdown
   const visibleTags = allTags.slice(0, 4);
-  const hiddenTags = allTags.slice(8);
+  const hiddenTags = allTags.slice(4);
   
   const filterTagsHtml = visibleTags.map(t => {
     const isActive = tag === t ? ' active' : '';
