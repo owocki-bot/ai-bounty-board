@@ -149,10 +149,28 @@ async function updateBounty(id, bounty) {
 async function atomicClaim(id, claimerAddress) {
   const numId = parseInt(id);
   if (!isNaN(numId) && SUPABASE_KEY) {
-    // Supabase: Use RPC or conditional PATCH with status check
-    // PostgREST doesn't support true transactions, but we can use
-    // a conditional update that only succeeds if status matches
+    // Fetch existing bounty data first
+    const existing = await getBounty(id);
+    if (!existing) {
+      console.log(`[ATOMIC CLAIM] Bounty ${id} not found`);
+      return null;
+    }
+    if (existing.status !== 'open') {
+      console.log(`[ATOMIC CLAIM] Bounty ${id} not open (status: ${existing.status})`);
+      return null;
+    }
+    
+    // Merge existing data with claim fields
     const now = Date.now();
+    const mergedData = {
+      ...existing,
+      status: 'claimed',
+      claimedBy: claimerAddress.toLowerCase(),
+      claimedAt: now,
+      updatedAt: now
+    };
+    
+    // Conditional update - only if still open (prevents race condition)
     const url = `${SUPABASE_URL}/rest/v1/bounties?id=eq.${numId}&data->>status=eq.open`;
     
     const response = await fetch(url, {
@@ -164,12 +182,7 @@ async function atomicClaim(id, claimerAddress) {
         'Prefer': 'return=representation'
       },
       body: JSON.stringify({
-        data: {
-          status: 'claimed',
-          claimedBy: claimerAddress.toLowerCase(),
-          claimedAt: now,
-          updatedAt: now
-        }
+        data: mergedData
       })
     });
     
@@ -180,24 +193,14 @@ async function atomicClaim(id, claimerAddress) {
     
     const result = await response.json();
     
-    // If no rows updated, the bounty wasn't in 'open' status
+    // If no rows updated, the bounty was claimed by someone else
     if (!result || result.length === 0) {
       console.log(`[ATOMIC CLAIM] Race condition prevented - bounty ${id} already claimed`);
       return null;
     }
     
-    // Need to merge with existing data
-    const existing = await getBounty(id);
-    const merged = { 
-      ...existing, 
-      status: 'claimed', 
-      claimedBy: claimerAddress.toLowerCase(),
-      claimedAt: now,
-      updatedAt: now
-    };
-    
     console.log(`[ATOMIC CLAIM] Bounty ${id} atomically claimed by ${claimerAddress}`);
-    return merged;
+    return mergedData;
   }
   
   // Fallback for memory-only mode (still has race condition but logs warning)
