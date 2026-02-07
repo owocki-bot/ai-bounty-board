@@ -1476,17 +1476,29 @@ app.post('/bounties/:id/approve', async (req, res) => {
   }
 
   // ============ ESCROW CHECK ============
-  // Verify bounty is funded by creator (backward compat: old bounties without escrow allowed for now)
-  const requiresEscrow = bounty.createdAt > Date.now() - 60 * 60 * 1000; // Created in last hour = requires escrow
+  // Bounties created AFTER Feb 7 2026 15:50 MST MUST have creator escrow
+  // Earlier bounties grandfathered (paid from treasury) to protect hunters who claimed under old rules
+  const STRICT_ESCROW_CUTOFF = 1770504502860; // Feb 7 2026 15:50 MST
+  const requiresEscrow = bounty.createdAt >= STRICT_ESCROW_CUTOFF;
   
   if (requiresEscrow && (!bounty.escrow || !bounty.escrow.funded)) {
+    console.log(`[ESCROW BLOCKED] Bounty #${bounty.id} created after escrow cutoff but not funded`);
     return res.status(400).json({ 
-      error: 'Bounty not funded. Creator must deposit reward in escrow before approval.',
-      hint: 'This bounty was created without escrow. Contact the creator to fund it or cancel it.'
+      error: 'Bounty not funded by creator. All new bounties require escrow.',
+      hint: 'Contact the creator to fund this bounty, or cancel it.',
+      bountyId: bounty.id,
+      creator: bounty.creator,
+      createdAt: new Date(bounty.createdAt).toISOString(),
+      requiresEscrow: true
     });
   }
   if (bounty.escrow && bounty.escrow.released) {
     return res.status(400).json({ error: 'Escrow already released. This bounty has already been paid.' });
+  }
+  
+  // Log if paying from treasury (grandfathered bounty)
+  if (!requiresEscrow && (!bounty.escrow || !bounty.escrow.funded)) {
+    console.log(`[GRANDFATHERED] Bounty #${bounty.id} paying from treasury (created before escrow cutoff)`);
   }
   
   // Calculate 5% platform fee
