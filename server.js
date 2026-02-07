@@ -1648,16 +1648,41 @@ app.post('/bounties/:id/reject', async (req, res) => {
     previousSubmissions: bounty.submissions
   });
   
-  // Reset to open
-  bounty.status = 'open';
-  bounty.claimedBy = null;
-  bounty.claimedAt = null;
-  bounty.submissions = [];
-  bounty.updatedAt = Date.now();
+  // Check for duplicates before reopening
+  // If an identical bounty (same title) already exists as "open", delete this one instead
+  const allBounties = await getAllBounties();
+  const duplicateOpen = allBounties.find(b => 
+    b.id !== bounty.id && 
+    b.title === bounty.title && 
+    b.status === 'open'
+  );
+  
+  if (duplicateOpen) {
+    // Duplicate exists — cancel this one instead of reopening
+    bounty.status = 'cancelled';
+    bounty.claimedBy = null;
+    bounty.claimedAt = null;
+    bounty.submissions = [];
+    bounty.updatedAt = Date.now();
+    
+    const updated = await updateBounty(bounty.id, bounty);
+    console.log(`[BOUNTY REJECTED + CANCELLED] #${bounty.id} - duplicate of #${duplicateOpen.id}`);
+    res.json({ 
+      ...updated, 
+      message: `Bounty rejected and cancelled (duplicate of #${duplicateOpen.id} already open). Reason: ${reason || 'Submission did not meet requirements'}` 
+    });
+  } else {
+    // No duplicate — safe to reopen
+    bounty.status = 'open';
+    bounty.claimedBy = null;
+    bounty.claimedAt = null;
+    bounty.submissions = [];
+    bounty.updatedAt = Date.now();
 
-  const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[BOUNTY REJECTED] #${bounty.id} - ${reason || 'No reason given'}`);
-  res.json({ ...updated, message: `Bounty rejected and reset to open. Reason: ${reason || 'Submission did not meet requirements'}` });
+    const updated = await updateBounty(bounty.id, bounty);
+    console.log(`[BOUNTY REJECTED] #${bounty.id} - ${reason || 'No reason given'}`);
+    res.json({ ...updated, message: `Bounty rejected and reset to open. Reason: ${reason || 'Submission did not meet requirements'}` });
+  }
 });
 
 /**
