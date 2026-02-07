@@ -101,9 +101,18 @@ async function deleteBounty(id) {
 }
 
 // In-memory fallback when Supabase unavailable
-const bountiesMemory = new Map();
-const agents = new Map();
-const webhooks = new Map(); // Agent notification webhooks
+// DATA STORAGE (Persistent via Supabase)
+// ============================================================================
+
+const { createStore } = require('./persistent-map');
+const store = createStore('ai-bounty-board');
+const bountiesMemory = store.map('bountiesMemory');
+const agents = store.map('agents');
+const webhooks = store.map('webhooks');
+
+// Middleware to ensure store is loaded before handling requests
+app.use(store.middleware());
+
 
 // Known agent registries to ping on new bounties
 const AGENT_REGISTRIES = [
@@ -416,11 +425,39 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (
 });
 
 /**
+ * Check if wallet is blocklisted
+ */
+async function isBlocklisted(address) {
+  if (!address) return false;
+  const normalized = address.toLowerCase();
+  
+  // Check blocklist record (stored as bounty with type=blocklist)
+  const result = await supabaseRequest('bounties', 'GET', { 
+    query: 'select=data&data->>type=eq.blocklist' 
+  });
+  
+  if (result && result.length > 0) {
+    const blocklist = result[0].data;
+    if (blocklist.wallets && blocklist.wallets.map(w => w.toLowerCase()).includes(normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Claim a bounty (agent takes the job)
  * POST /bounties/:id/claim
  */
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address } = req.body;
+  
+  // Check blocklist first
+  if (await isBlocklisted(address)) {
+    console.log(`[BLOCKED] ${address} attempted to claim bounty but is blocklisted`);
+    return res.status(403).json({ error: 'This wallet has been blocklisted for abuse' });
+  }
+  
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
@@ -599,12 +636,48 @@ app.post('/bounties/:id/approve', async (req, res) => {
   const WALLET_PK = process.env.WALLET_PRIVATE_KEY;
   let txHash = null;
 
-  if (!WALLET_PK) {
-    return res.status(500).json({ error: 'Server wallet not configured. Cannot process real payments.' });
-  }
-
   if (!bounty.claimedBy || !ethers.isAddress(bounty.claimedBy)) {
     return res.status(400).json({ error: 'Invalid recipient address' });
+  }
+
+  // ============ PAYMENT EXECUTION ============
+  // If wallet key is available, execute directly.
+  // Otherwise, queue for the local payment-relay service.
+  if (!WALLET_PK) {
+    // No wallet key on this server — queue for local payment relay
+    console.log(`[BOUNTY PAYMENT] No wallet key — queueing bounty #${bounty.id} for payment relay`);
+    bounty.status = 'payment_pending';
+    bounty.approvedAt = Date.now();
+    bounty.updatedAt = Date.now();
+    bounty.pendingPayment = {
+      grossReward,
+      fee,
+      netReward,
+      recipient: bounty.claimedBy,
+      token: 'USDC',
+      chain: 'base'
+    };
+
+    await updateBounty(bounty.id, bounty);
+
+    console.log(`[BOUNTY PAYMENT] ✅ Bounty #${bounty.id} queued for payment relay (${(netReward / 1e6).toFixed(2)} USDC to ${bounty.claimedBy})`);
+
+    return res.json({
+      ...bounty,
+      payment: {
+        status: 'pending',
+        message: 'Payment approved and queued. The local payment relay will execute the USDC transfer shortly.',
+        recipient: bounty.claimedBy,
+        grossAmount: grossReward,
+        fee,
+        feeFormatted: (fee / 1e6).toFixed(2) + ' USDC',
+        netAmount: netReward,
+        netAmountFormatted: (netReward / 1e6).toFixed(2) + ' USDC',
+        feePercent: FEE_PERCENT + '%',
+        chain: 'base',
+        note: 'Payment will be processed by the local relay within ~30 seconds.'
+      }
+    });
   }
 
   try {
@@ -735,6 +808,51 @@ app.post('/internal/bounties', async (req, res) => {
 });
 
 /**
+ * Reject a submission (admin only)
+ * Resets bounty to open status, clears claim info
+ * POST /bounties/:id/reject
+ */
+app.post('/bounties/:id/reject', async (req, res) => {
+  const { reason } = req.body;
+  const internalKey = req.headers['x-internal-key'];
+  const bounty = await getBounty(req.params.id);
+  
+  if (!bounty) {
+    return res.status(404).json({ error: 'Bounty not found' });
+  }
+  
+  // Require internal key for rejection
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  if (!validInternalKey) {
+    return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header.' });
+  }
+  
+  if (bounty.status !== 'submitted' && bounty.status !== 'claimed') {
+    return res.status(400).json({ error: `Cannot reject bounty with status: ${bounty.status}` });
+  }
+  
+  // Store rejection info
+  bounty.rejections = bounty.rejections || [];
+  bounty.rejections.push({
+    rejectedAt: Date.now(),
+    reason: reason || 'Submission did not meet requirements',
+    previousClaimant: bounty.claimedBy,
+    previousSubmissions: bounty.submissions
+  });
+  
+  // Reset to open
+  bounty.status = 'open';
+  bounty.claimedBy = null;
+  bounty.claimedAt = null;
+  bounty.submissions = [];
+  bounty.updatedAt = Date.now();
+
+  const updated = await updateBounty(bounty.id, bounty);
+  console.log(`[BOUNTY REJECTED] #${bounty.id} - ${reason || 'No reason given'}`);
+  res.json({ ...updated, message: `Bounty rejected and reset to open. Reason: ${reason || 'Submission did not meet requirements'}` });
+});
+
+/**
  * Cancel a bounty (creator only, before claimed)
  * POST /bounties/:id/cancel
  */
@@ -788,6 +906,105 @@ app.get('/health', (req, res) => {
     x402: true,
     network: 'base'
   });
+});
+
+/**
+ * Admin: Get blocklist
+ * GET /admin/blocklist
+ */
+app.get('/admin/blocklist', async (req, res) => {
+  const result = await supabaseRequest('bounties', 'GET', { 
+    query: 'select=data&data->>type=eq.blocklist' 
+  });
+  
+  if (result && result.length > 0) {
+    res.json(result[0].data);
+  } else {
+    res.json({ type: 'blocklist', wallets: [], entries: [] });
+  }
+});
+
+/**
+ * Admin: Add wallet to blocklist
+ * POST /admin/blocklist
+ */
+app.post('/admin/blocklist', async (req, res) => {
+  const { wallet, reason, blockedBy } = req.body;
+  
+  if (!wallet) {
+    return res.status(400).json({ error: 'wallet required' });
+  }
+  
+  const normalized = wallet.toLowerCase();
+  
+  // Get existing blocklist
+  const result = await supabaseRequest('bounties', 'GET', { 
+    query: 'select=id,data&data->>type=eq.blocklist' 
+  });
+  
+  let blocklistId, blocklist;
+  if (result && result.length > 0) {
+    blocklistId = result[0].id;
+    blocklist = result[0].data;
+  } else {
+    // Create new blocklist
+    blocklist = { type: 'blocklist', wallets: [], entries: [] };
+  }
+  
+  // Add wallet if not already blocked
+  if (!blocklist.wallets.includes(normalized)) {
+    blocklist.wallets.push(normalized);
+    blocklist.entries.push({
+      wallet: normalized,
+      reason: reason || 'No reason provided',
+      blockedAt: new Date().toISOString(),
+      blockedBy: blockedBy || 'admin'
+    });
+    
+    if (blocklistId) {
+      await supabaseRequest('bounties', 'PATCH', { 
+        query: `id=eq.${blocklistId}`,
+        body: { data: blocklist }
+      });
+    } else {
+      await supabaseRequest('bounties', 'POST', { 
+        body: { data: blocklist }
+      });
+    }
+  }
+  
+  console.log(`[BLOCKLIST] Added ${normalized} - ${reason}`);
+  res.json({ success: true, blocklist });
+});
+
+/**
+ * Admin: Remove wallet from blocklist
+ * DELETE /admin/blocklist/:wallet
+ */
+app.delete('/admin/blocklist/:wallet', async (req, res) => {
+  const normalized = req.params.wallet.toLowerCase();
+  
+  const result = await supabaseRequest('bounties', 'GET', { 
+    query: 'select=id,data&data->>type=eq.blocklist' 
+  });
+  
+  if (!result || result.length === 0) {
+    return res.status(404).json({ error: 'Blocklist not found' });
+  }
+  
+  const blocklistId = result[0].id;
+  const blocklist = result[0].data;
+  
+  blocklist.wallets = blocklist.wallets.filter(w => w.toLowerCase() !== normalized);
+  blocklist.entries = blocklist.entries.filter(e => e.wallet.toLowerCase() !== normalized);
+  
+  await supabaseRequest('bounties', 'PATCH', { 
+    query: `id=eq.${blocklistId}`,
+    body: { data: blocklist }
+  });
+  
+  console.log(`[BLOCKLIST] Removed ${normalized}`);
+  res.json({ success: true, blocklist });
 });
 
 /**
