@@ -1288,15 +1288,16 @@ app.post('/bounties/:id/submit', async (req, res) => {
     return res.status(400).json({ error: 'submission required' });
   }
   
-  // ANTI-GAMING: Minimum work time (10 minutes for bounties > $20)
+  // ANTI-GAMING: Minimum work time (10 minutes for ALL bounties)
   const reward = parseFloat(bounty.reward) / 1_000_000;
   const MIN_WORK_TIME_MS = 10 * 60 * 1000; // 10 minutes
-  if (reward > 20 && bounty.claimedAt && (Date.now() - bounty.claimedAt) < MIN_WORK_TIME_MS) {
+  if (bounty.claimedAt && (Date.now() - bounty.claimedAt) < MIN_WORK_TIME_MS) {
+    const workTimeMin = Math.floor((Date.now() - bounty.claimedAt) / 60000);
     const waitMins = Math.ceil((MIN_WORK_TIME_MS - (Date.now() - bounty.claimedAt)) / 60000);
-    console.log(`[FAST SUBMIT BLOCKED] ${address} tried to submit ${req.params.id} too fast`);
+    console.log(`[FAST SUBMIT BLOCKED] ${address} tried to submit ${req.params.id} after ${workTimeMin} min (min: 10 min)`);
     return res.status(400).json({ 
-      error: `Please spend more time on the work. Wait ${waitMins} more minutes.`,
-      minWorkTimeMinutes: 10
+      error: `Work time too short: ${workTimeMin} minutes. Minimum 10 minutes required to prevent gaming.`,
+      hint: `Wait ${waitMins} more minutes before submitting.`
     });
   }
   
@@ -1462,12 +1463,14 @@ app.post('/bounties/:id/approve', async (req, res) => {
         // Not a valid URL — that's fine, might be a text description
       }
     }
-    // Reject if claimed and submitted within 60 seconds (likely gaming)
+    // AUTO-REJECT: claimed and submitted within 10 minutes (likely gaming)
     const claimToSubmitMs = (lastSubmission.submittedAt || 0) - (bounty.claimedAt || 0);
-    if (claimToSubmitMs > 0 && claimToSubmitMs < 60000) {
+    const claimToSubmitMin = Math.floor(claimToSubmitMs / 1000 / 60);
+    if (claimToSubmitMs > 0 && claimToSubmitMs < 10 * 60 * 1000) { // 10 minutes
+      console.log(`[AUTO-REJECTED] Bounty #${bounty.id}: Work time ${claimToSubmitMin} min (< 10 min threshold)`);
       return res.status(400).json({ 
-        error: `Submission came ${Math.round(claimToSubmitMs/1000)}s after claiming. This looks automated. Please allow time for real work.`,
-        hint: 'If this is legitimate, contact the bounty creator for manual approval.'
+        error: `Work time too short: ${claimToSubmitMin} minutes. Minimum 10 minutes required to prevent gaming.`,
+        hint: 'This auto-rejection protects against automated submissions. Real work takes time.'
       });
     }
   }
