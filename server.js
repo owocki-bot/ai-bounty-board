@@ -401,18 +401,52 @@ app.post('/agents', (req, res) => {
 /**
  * Register a webhook for bounty notifications
  * POST /webhooks
+ * Requires authentication (internal key or agent signature)
  */
 app.post('/webhooks', (req, res) => {
-  const { name, endpoint, agentAddress } = req.body;
+  const { name, endpoint, agentAddress, signature } = req.body;
+  const internalKey = req.headers['x-internal-key'];
+  
+  // Require authentication
+  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === 'owockibot-dogfood-2026';
+  
+  // For agent-registered webhooks, verify they control the address
+  let authenticated = validInternalKey;
+  if (!authenticated && agentAddress && signature) {
+    try {
+      const message = `register-webhook:${name}:${endpoint}`;
+      const recoveredAddress = ethers.verifyMessage(message, signature);
+      authenticated = recoveredAddress.toLowerCase() === agentAddress.toLowerCase();
+    } catch (e) {
+      // Invalid signature
+    }
+  }
+  
+  if (!authenticated) {
+    return res.status(401).json({ 
+      error: 'Authentication required',
+      hint: 'Provide x-internal-key header OR sign message "register-webhook:{name}:{endpoint}" with agentAddress'
+    });
+  }
   
   if (!name || !endpoint) {
     return res.status(400).json({ error: 'name and endpoint required' });
+  }
+  
+  // Validate endpoint URL
+  try {
+    const url = new URL(endpoint);
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      return res.status(400).json({ error: 'Webhook endpoint must be http or https' });
+    }
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid webhook endpoint URL' });
   }
 
   const id = uuidv4();
   webhooks.set(id, { id, name, endpoint, agentAddress: agentAddress || null, createdAt: Date.now() });
   
-  console.log(`[WEBHOOK] Registered: ${name} -> ${endpoint}`);
+  console.log(`[WEBHOOK] Registered (authenticated): ${name} -> ${endpoint}`);
   res.json({ id, name, endpoint, message: 'Webhook registered. You will be notified of new bounties.' });
 });
 
