@@ -13,6 +13,9 @@ app.get('/browse', async (req, res) => {
   let allBounties = await getAllBounties();
   console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
 
+  // Keep unfiltered bounties for profile section
+  const allBountiesUnfiltered = [...allBounties];
+
   if (status && status !== 'all') {
     allBounties = allBounties.filter(b => b.status === status);
   }
@@ -105,6 +108,12 @@ app.get('/browse', async (req, res) => {
     submissions: (b.submissions || []).map(s => ({
       id: s.id, content: s.content, proof: s.proof, submittedAt: s.submittedAt, editedAt: s.editedAt
     }))
+  })));
+
+  // All bounties for profile section (unfiltered)
+  const allBountiesJson = JSON.stringify(allBountiesUnfiltered.map(b => ({
+    id: b.id, title: b.title, status: b.status, reward: b.reward, 
+    rewardFormatted: b.rewardFormatted, claimedBy: b.claimedBy, creator: b.creator
   })));
 
   const filterTagsHtml = allTags.map(t => {
@@ -323,6 +332,7 @@ app.get('/browse', async (req, res) => {
     '<div class="toast" id="toast"></div>\n' +
     '<script>\n' +
     'var BOUNTIES = ' + bountiesJson + ';\n' +
+    'var ALL_BOUNTIES = ' + allBountiesJson + ';\n' +
     'var userAddress = localStorage.getItem("bb_address") || "";\n' +
     'var walletSource = localStorage.getItem("bb_wallet_source") || "";\n' +
     '\n' +
@@ -375,7 +385,7 @@ app.get('/browse', async (req, res) => {
     '  var section = document.getElementById("profile-section");\n' +
     '  var addrLower = addr.toLowerCase();\n' +
     '  var myBounties = { inprogress: [], submitted: [], completed: [] };\n' +
-    '  BOUNTIES.forEach(function(b) {\n' +
+    '  ALL_BOUNTIES.forEach(function(b) {\n' +
     '    if (b.claimedBy && b.claimedBy.toLowerCase() === addrLower) {\n' +
     '      if (b.status === "claimed") myBounties.inprogress.push(b);\n' +
     '      else if (b.status === "submitted") myBounties.submitted.push(b);\n' +
@@ -383,7 +393,6 @@ app.get('/browse', async (req, res) => {
     '    }\n' +
     '  });\n' +
     '  var total = myBounties.inprogress.length + myBounties.submitted.length + myBounties.completed.length;\n' +
-    '  if (total === 0) { section.style.display = "none"; return; }\n' +
     '  section.style.display = "block";\n' +
     '  var statsHtml = \'<div class="profile-stat"><span class="num">\' + myBounties.inprogress.length + \'</span><span class="label">In Progress</span></div>\' +\n' +
     '    \'<div class="profile-stat"><span class="num">\' + myBounties.submitted.length + \'</span><span class="label">Submitted</span></div>\' +\n' +
