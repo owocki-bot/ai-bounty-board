@@ -15,11 +15,13 @@ const app = express();
 app.use(cors());
 
 // ============ PAYLOAD SIZE LIMITS ============
-const MAX_JSON_SIZE = '50kb'; // Limit request body size
+const MAX_JSON_SIZE = '10kb'; // Limit request body size (was 50kb)
 app.use(express.json({ limit: MAX_JSON_SIZE }));
 
 // Block oversized submissions at route level
-const MAX_SUBMISSION_LENGTH = 10000; // 10KB text limit for submission content
+// Based on analysis: largest submission was 1,155 bytes, typical 50-500
+// 5KB gives 4x headroom while preventing abuse
+const MAX_SUBMISSION_LENGTH = 5000; // 5KB text limit for submission content
 
 // ============ RATE LIMITING ============
 const rateLimits = new Map(); // address -> { count, windowStart }
@@ -558,6 +560,21 @@ app.post('/bounties', requirePayment(POSTING_FEE, 'Bounty posting fee'), async (
   
   if (!title || !description || !reward) {
     return res.status(400).json({ error: 'title, description, and reward required' });
+  }
+  
+  // Size limits for bounty content
+  const MAX_TITLE_LENGTH = 200;
+  const MAX_DESCRIPTION_LENGTH = 5000;
+  const MAX_REQUIREMENTS = 20;
+  
+  if (title.length > MAX_TITLE_LENGTH) {
+    return res.status(400).json({ error: `Title too long (max ${MAX_TITLE_LENGTH} chars)`, yourLength: title.length });
+  }
+  if (description.length > MAX_DESCRIPTION_LENGTH) {
+    return res.status(400).json({ error: `Description too long (max ${MAX_DESCRIPTION_LENGTH} chars)`, yourLength: description.length });
+  }
+  if (requirements && requirements.length > MAX_REQUIREMENTS) {
+    return res.status(400).json({ error: `Too many requirements (max ${MAX_REQUIREMENTS})`, yourCount: requirements.length });
   }
 
   const bounty = {
