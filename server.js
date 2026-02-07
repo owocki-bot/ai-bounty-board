@@ -1437,6 +1437,18 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header, modWallet in body (if you are a mod), or creatorSignature.' });
   }
   
+  // Track who approved this bounty
+  let approvedBy = 'unknown';
+  if (validInternalKey) {
+    approvedBy = 'internal-key';
+  } else if (isModApproval) {
+    approvedBy = modWallet;
+  } else if (creatorSignature) {
+    approvedBy = 'creator';
+  }
+  
+  console.log(`[APPROVAL] Bounty #${bounty.id} approved by: ${approvedBy}`);
+  
   // CONFLICT OF INTEREST CHECK: Approver cannot be the submitter
   if (modWallet && bounty.claimedBy && modWallet.toLowerCase() === bounty.claimedBy.toLowerCase()) {
     console.log(`[CONFLICT OF INTEREST] ${modWallet} tried to approve their own submission on bounty #${bounty.id}`);
@@ -1595,6 +1607,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
   bounty.status = 'completed';
   bounty.completedAt = Date.now();
   bounty.updatedAt = Date.now();
+  bounty.approvedBy = approvedBy; // Track who approved this
   
   // Mark escrow as released
   if (bounty.escrow) {
