@@ -1097,6 +1097,111 @@ app.post('/bounties/:id/reject', async (req, res) => {
 });
 
 /**
+ * AI Autograder - evaluate submission against requirements
+ * POST /bounties/:id/grade
+ * Returns pass/fail for each requirement + overall recommendation
+ */
+app.post('/bounties/:id/grade', async (req, res) => {
+  const bounty = await getBounty(req.params.id);
+  
+  if (!bounty) {
+    return res.status(404).json({ error: 'Bounty not found' });
+  }
+  if (bounty.status !== 'submitted') {
+    return res.status(400).json({ error: 'No submission to grade' });
+  }
+  if (!bounty.requirements || bounty.requirements.length === 0) {
+    return res.json({ 
+      recommendation: 'manual_review',
+      reason: 'No structured requirements to grade against',
+      grades: []
+    });
+  }
+
+  const lastSubmission = bounty.submissions?.[bounty.submissions.length - 1];
+  if (!lastSubmission) {
+    return res.status(400).json({ error: 'No submission found' });
+  }
+
+  const submissionContent = lastSubmission.content?.description || lastSubmission.content?.proofUrl || lastSubmission.proof || '';
+  
+  // Build grading prompt
+  const prompt = `You are an AI grader for a bounty submission. Evaluate if the submission meets each requirement.
+
+BOUNTY: ${bounty.title}
+DESCRIPTION: ${bounty.description}
+
+REQUIREMENTS:
+${bounty.requirements.map((r, i) => `${i + 1}. ${r}`).join('\n')}
+
+SUBMISSION:
+${JSON.stringify(lastSubmission.content || submissionContent, null, 2)}
+Proof URL: ${lastSubmission.proof || lastSubmission.content?.proofUrl || 'None'}
+
+For each requirement, respond with PASS or FAIL and a brief reason.
+Then give an overall recommendation: APPROVE (all pass), REJECT (obvious fail/spam), or MANUAL_REVIEW (borderline).
+
+Format your response as JSON:
+{
+  "grades": [
+    {"requirement": "...", "status": "PASS|FAIL", "reason": "..."}
+  ],
+  "recommendation": "APPROVE|REJECT|MANUAL_REVIEW",
+  "summary": "Brief overall assessment"
+}`;
+
+  try {
+    // Use OpenAI API if available, otherwise return manual review
+    const OPENAI_KEY = process.env.OPENAI_API_KEY;
+    if (!OPENAI_KEY) {
+      return res.json({
+        recommendation: 'manual_review',
+        reason: 'No AI grading API configured',
+        grades: bounty.requirements.map(r => ({ requirement: r, status: 'UNKNOWN', reason: 'API not configured' }))
+      });
+    }
+
+    const aiRes = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' }
+      })
+    });
+
+    if (!aiRes.ok) {
+      throw new Error(`OpenAI API error: ${aiRes.status}`);
+    }
+
+    const aiData = await aiRes.json();
+    const gradeResult = JSON.parse(aiData.choices[0].message.content);
+
+    // Log the grade
+    console.log(`[AUTOGRADER] Bounty #${bounty.id}: ${gradeResult.recommendation} - ${gradeResult.summary}`);
+
+    res.json({
+      bountyId: bounty.id,
+      bountyTitle: bounty.title,
+      ...gradeResult,
+      gradedAt: new Date().toISOString()
+    });
+
+  } catch (e) {
+    console.error('[AUTOGRADER] Error:', e.message);
+    res.json({
+      recommendation: 'manual_review',
+      reason: `Grading error: ${e.message}`,
+      grades: []
+    });
+  }
+});
+
+/**
  * Cancel a bounty (creator only, before claimed)
  * POST /bounties/:id/cancel
  */
