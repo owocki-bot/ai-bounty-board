@@ -120,11 +120,22 @@ app.get('/browse', async (req, res) => {
     rewardFormatted: b.rewardFormatted, claimedBy: b.claimedBy, creator: b.creator
   })));
 
-  const filterTagsHtml = allTags.map(t => {
+  // Limit visible tags to 8, rest in dropdown
+  const visibleTags = allTags.slice(0, 8);
+  const hiddenTags = allTags.slice(8);
+  
+  const filterTagsHtml = visibleTags.map(t => {
     const isActive = tag === t ? ' active' : '';
     const href = '/browse?tag=' + t + (status ? '&status=' + status : '');
     return '<a href="' + href + '" class="filter-btn' + isActive + '">#' + esc(t) + '</a>';
-  }).join('');
+  }).join('') + (hiddenTags.length > 0 ? 
+    '<select class="filter-select" onchange="if(this.value)window.location.href=this.value">' +
+    '<option value="">+' + hiddenTags.length + ' more</option>' +
+    hiddenTags.map(t => {
+      const href = '/browse?tag=' + t + (status ? '&status=' + status : '');
+      return '<option value="' + href + '"' + (tag === t ? ' selected' : '') + '>#' + esc(t) + '</option>';
+    }).join('') +
+    '</select>' : '');
 
   // Build pagination controls
   const buildPageUrl = (p) => {
@@ -206,6 +217,9 @@ app.get('/browse', async (req, res) => {
     '.filter-btn { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 0.4rem 0.8rem; border-radius: 20px; cursor: pointer; font-size: 0.85rem; transition: all 0.2s; text-decoration: none; }\n' +
     '.filter-btn:hover { background: rgba(255,255,255,0.2); }\n' +
     '.filter-btn.active { background: #00d4ff; color: #000; border-color: #00d4ff; }\n' +
+    '.filter-select { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 0.4rem 0.8rem; border-radius: 20px; font-size: 0.85rem; cursor: pointer; }\n' +
+    '.filter-select:hover { background: rgba(255,255,255,0.2); }\n' +
+    '.filter-select option { background: #1a1a2e; color: #fff; }\n' +
     '.bounties-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1.5rem; }\n' +
     '.bounty-card { background: rgba(255,255,255,0.05); border-radius: 16px; padding: 1.5rem; border: 1px solid rgba(255,255,255,0.1); transition: all 0.3s; }\n' +
     '.bounty-card:hover { transform: translateY(-4px); border-color: #00d4ff; box-shadow: 0 8px 30px rgba(0,212,255,0.15); }\n' +
