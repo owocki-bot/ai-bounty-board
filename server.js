@@ -190,8 +190,21 @@ async function supabaseRequest(table, method = 'GET', options = {}) {
 // ============ BOUNTY DATABASE OPERATIONS ============
 async function getAllBounties() {
   const result = await supabaseRequest('bounties', 'GET');
-  if (!result) return Array.from(bountiesMemory.values());
-  return result.map(row => ({ id: row.id.toString(), ...row.data }));
+  if (!result) return Array.from(bountiesMemory.values()).map(b => {
+    if (!Array.isArray(b.requirements)) {
+      if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
+      else b.requirements = [];
+    }
+    return b;
+  });
+  return result.map(row => {
+    const data = { ...row.data };
+    if (!Array.isArray(data.requirements)) {
+      if (typeof data.requirements === 'string' && data.requirements.trim()) data.requirements = [data.requirements];
+      else data.requirements = [];
+    }
+    return { id: row.id.toString(), ...data };
+  });
 }
 
 async function getBounty(id) {

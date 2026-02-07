@@ -57,8 +57,9 @@ app.get('/browse', async (req, res) => {
   const bountyCards = paginatedBounties.map(b => {
     const subs = (b.submissions || []);
     const tagsHtml = (b.tags || []).map(t => '<a href="/browse?tag=' + t + '" class="tag">#' + esc(t) + '</a>').join(' ');
-    const reqsHtml = (b.requirements && b.requirements.length > 0)
-      ? '<div class="requirements"><strong>Requirements:</strong><ul>' + b.requirements.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul></div>'
+    const reqList = Array.isArray(b.requirements) ? b.requirements : [];
+    const reqsHtml = (reqList.length > 0)
+      ? '<div class="requirements"><strong>Requirements:</strong><ul>' + reqList.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul></div>'
       : '';
     const claimedMeta = b.claimedBy
       ? '<div class="meta-item"><span class="meta-label">Claimed by</span><span class="meta-value">' + b.claimedBy.slice(0,6) + '...' + b.claimedBy.slice(-4) + '</span></div>'
@@ -613,7 +614,8 @@ app.get('/browse', async (req, res) => {
   );
   } catch (err) {
     console.error('[BROWSE] Error:', err);
-    res.status(500).send('<!DOCTYPE html><html><body><h1>Error loading bounties</h1><p>' + err.message + '</p><p><a href="/">Go home</a></p></body></html>');
+    // Fail open: redirect to home instead of hard 500
+    return res.redirect('/');
   }
 });
 
