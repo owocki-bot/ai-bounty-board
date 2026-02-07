@@ -715,6 +715,15 @@ app.get('/mod', async (req, res) => {
     const submittedAt = lastSub?.submittedAt ? new Date(lastSub.submittedAt).toLocaleString() : 'Unknown';
     const reward = (parseInt(b.reward || 0) / 1e6).toFixed(2);
     
+    // Calculate claim-to-submit time (gaming detection)
+    let claimToSubmitMin = '?';
+    if (b.claimedAt && lastSub?.submittedAt) {
+      const gapMs = lastSub.submittedAt - b.claimedAt;
+      claimToSubmitMin = Math.floor(gapMs / 1000 / 60);
+    }
+    
+    const workTimeStyle = claimToSubmitMin !== '?' && claimToSubmitMin < 10 ? 'color:#ff6b6b;font-weight:bold;' : '';
+    
     return `
       <tr data-id="${esc(b.id)}" data-claimer="${esc(b.claimedBy || '')}">
         <td><strong>#${esc(b.id)}</strong></td>
@@ -722,6 +731,7 @@ app.get('/mod', async (req, res) => {
         <td>$${reward}</td>
         <td><code>${esc(b.claimedBy?.slice(0,6))}...${esc(b.claimedBy?.slice(-4))}</code></td>
         <td>${score}%</td>
+        <td style="${workTimeStyle}">${claimToSubmitMin} min</td>
         <td>${submittedAt}</td>
         <td>
           <button class="btn-approve" onclick="approveBounty('${esc(b.id)}')">✅ Approve</button>
@@ -852,6 +862,7 @@ app.get('/mod', async (req, res) => {
           <th>Reward</th>
           <th>Submitter</th>
           <th>Score</th>
+          <th>Work Time</th>
           <th>Submitted</th>
           <th>Actions</th>
         </tr>
