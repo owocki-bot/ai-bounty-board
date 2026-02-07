@@ -809,6 +809,16 @@ app.get('/mod', async (req, res) => {
       <span id="wallet-status" style="color:#4ade80;display:none;">✓ Connected</span>
     </div>
     
+    <div class="info-banner" style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.3);border-radius:12px;padding:1rem;margin-bottom:1.5rem;">
+      <strong>📋 How Scoring Works:</strong>
+      <ul style="margin:0.5rem 0 0 1.5rem;color:#aaa;font-size:0.9rem;">
+        <li><strong>Score is advisory only</strong> — you have final say</li>
+        <li>Auto-reject only if: score &lt;20% AND no proof URL</li>
+        <li>Review submission content + proof before approving</li>
+        <li>Check requirements are actually met (not just keywords)</li>
+      </ul>
+    </div>
+    
     <div class="stats">
       <div class="stat">
         <div class="stat-value">${pending.length}</div>
