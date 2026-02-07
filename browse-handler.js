@@ -162,6 +162,27 @@ app.get('/browse', async (req, res) => {
     '.btn-wallet-disconnect { background: rgba(255,255,255,0.1); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); padding: 0.4rem 0.8rem; border-radius: 8px; cursor: pointer; font-size: 0.8rem; }\n' +
     '.btn-set-addr { background: #10b981; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }\n' +
     '.wallet-divider { color: #444; font-size: 0.8rem; }\n' +
+    '.profile-section { margin-bottom: 1.5rem; padding: 1.5rem; background: rgba(255,255,255,0.03); border-radius: 12px; border: 1px solid rgba(0,212,255,0.2); }\n' +
+    '.profile-header-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }\n' +
+    '.profile-title { font-size: 1.2rem; color: #fff; margin: 0; }\n' +
+    '.profile-toggle { background: none; border: none; color: #00d4ff; font-size: 1rem; cursor: pointer; padding: 0.25rem 0.5rem; }\n' +
+    '.profile-stats { display: flex; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }\n' +
+    '.profile-stat { background: rgba(255,255,255,0.05); padding: 0.5rem 1rem; border-radius: 8px; text-align: center; min-width: 80px; }\n' +
+    '.profile-stat .num { font-size: 1.25rem; font-weight: bold; color: #00d4ff; display: block; }\n' +
+    '.profile-stat .label { font-size: 0.7rem; color: #888; }\n' +
+    '.profile-tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }\n' +
+    '.profile-tab { background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2); color: #fff; padding: 0.5rem 1rem; border-radius: 8px; cursor: pointer; font-size: 0.85rem; transition: all 0.2s; }\n' +
+    '.profile-tab:hover { background: rgba(255,255,255,0.2); }\n' +
+    '.profile-tab.active { background: #00d4ff; color: #000; border-color: #00d4ff; }\n' +
+    '.profile-bounties { max-height: 400px; overflow-y: auto; }\n' +
+    '.profile-bounty-item { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; background: rgba(255,255,255,0.03); border-radius: 8px; margin-bottom: 0.5rem; border: 1px solid rgba(255,255,255,0.06); }\n' +
+    '.profile-bounty-item:hover { border-color: rgba(0,212,255,0.3); }\n' +
+    '.profile-bounty-info { flex: 1; min-width: 0; }\n' +
+    '.profile-bounty-title { color: #fff; font-size: 0.9rem; margin-bottom: 0.25rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }\n' +
+    '.profile-bounty-meta { display: flex; gap: 1rem; font-size: 0.75rem; color: #888; }\n' +
+    '.profile-bounty-reward { color: #00d4ff; font-weight: bold; font-size: 0.9rem; white-space: nowrap; }\n' +
+    '.profile-empty { text-align: center; padding: 2rem; color: #666; }\n' +
+    '.profile-content.collapsed { display: none; }\n' +
     '.stats-bar { display: flex; gap: 2rem; margin-bottom: 2rem; flex-wrap: wrap; }\n' +
     '.stat-pill { background: rgba(255,255,255,0.05); padding: 0.5rem 1rem; border-radius: 20px; display: flex; align-items: center; gap: 0.5rem; }\n' +
     '.stat-pill .num { font-weight: bold; color: #00d4ff; }\n' +
@@ -262,6 +283,18 @@ app.get('/browse', async (req, res) => {
     '<button class="btn-wallet-disconnect" onclick="disconnectWallet()">Disconnect</button>\n' +
     '</div>\n' +
     '</div>\n' +
+    '<!-- My Profile Section (shows when connected) -->\n' +
+    '<div class="profile-section" id="profile-section" style="display:none;">\n' +
+    '<div class="profile-header-bar"><h2 class="profile-title">📋 My Bounties</h2><button class="profile-toggle" id="profile-toggle" onclick="toggleProfileSection()">▼</button></div>\n' +
+    '<div class="profile-content" id="profile-content">\n' +
+    '<div class="profile-stats" id="profile-stats"></div>\n' +
+    '<div class="profile-tabs">\n' +
+    '<button class="profile-tab active" data-tab="inprogress" onclick="switchProfileTab(\'inprogress\')">🔄 In Progress</button>\n' +
+    '<button class="profile-tab" data-tab="submitted" onclick="switchProfileTab(\'submitted\')">📤 Submitted</button>\n' +
+    '<button class="profile-tab" data-tab="completed" onclick="switchProfileTab(\'completed\')">✅ Completed</button>\n' +
+    '</div>\n' +
+    '<div class="profile-bounties" id="profile-bounties"></div>\n' +
+    '</div></div>\n' +
     '<!-- Stats -->\n' +
     '<div class="stats-bar">' +
     '<div class="stat-pill"><span class="num">' + stats.total + '</span> Total</div>' +
@@ -328,11 +361,68 @@ app.get('/browse', async (req, res) => {
     '  localStorage.removeItem("bb_address"); localStorage.removeItem("bb_wallet_source");\n' +
     '  document.getElementById("wallet-connected").style.display = "none";\n' +
     '  document.getElementById("wallet-disconnected").style.display = "flex";\n' +
+    '  document.getElementById("profile-section").style.display = "none";\n' +
     '}\n' +
     'function showConnected(addr) {\n' +
     '  document.getElementById("wallet-disconnected").style.display = "none";\n' +
     '  document.getElementById("wallet-connected").style.display = "flex";\n' +
     '  document.getElementById("display-address").textContent = addr.slice(0,6) + "..." + addr.slice(-4);\n' +
+    '  renderProfileSection(addr);\n' +
+    '}\n' +
+    '\n' +
+    'var currentProfileTab = "inprogress";\n' +
+    'function renderProfileSection(addr) {\n' +
+    '  var section = document.getElementById("profile-section");\n' +
+    '  var addrLower = addr.toLowerCase();\n' +
+    '  var myBounties = { inprogress: [], submitted: [], completed: [] };\n' +
+    '  BOUNTIES.forEach(function(b) {\n' +
+    '    if (b.claimedBy && b.claimedBy.toLowerCase() === addrLower) {\n' +
+    '      if (b.status === "claimed") myBounties.inprogress.push(b);\n' +
+    '      else if (b.status === "submitted") myBounties.submitted.push(b);\n' +
+    '      else if (b.status === "completed") myBounties.completed.push(b);\n' +
+    '    }\n' +
+    '  });\n' +
+    '  var total = myBounties.inprogress.length + myBounties.submitted.length + myBounties.completed.length;\n' +
+    '  if (total === 0) { section.style.display = "none"; return; }\n' +
+    '  section.style.display = "block";\n' +
+    '  var statsHtml = \'<div class="profile-stat"><span class="num">\' + myBounties.inprogress.length + \'</span><span class="label">In Progress</span></div>\' +\n' +
+    '    \'<div class="profile-stat"><span class="num">\' + myBounties.submitted.length + \'</span><span class="label">Submitted</span></div>\' +\n' +
+    '    \'<div class="profile-stat"><span class="num">\' + myBounties.completed.length + \'</span><span class="label">Completed</span></div>\';\n' +
+    '  document.getElementById("profile-stats").innerHTML = statsHtml;\n' +
+    '  renderProfileBounties(myBounties[currentProfileTab]);\n' +
+    '}\n' +
+    'function switchProfileTab(tab) {\n' +
+    '  currentProfileTab = tab;\n' +
+    '  document.querySelectorAll(".profile-tab").forEach(function(el) { el.classList.remove("active"); });\n' +
+    '  document.querySelector(".profile-tab[data-tab=\'" + tab + "\']").classList.add("active");\n' +
+    '  if (userAddress) renderProfileSection(userAddress);\n' +
+    '}\n' +
+    'function renderProfileBounties(bounties) {\n' +
+    '  var container = document.getElementById("profile-bounties");\n' +
+    '  if (!bounties || bounties.length === 0) {\n' +
+    '    container.innerHTML = \'<div class="profile-empty">No bounties in this category</div>\';\n' +
+    '    return;\n' +
+    '  }\n' +
+    '  var html = bounties.map(function(b) {\n' +
+    '    return \'<div class="profile-bounty-item" onclick="scrollToBounty(\\\'\' + b.id + \'\\\')"><div class="profile-bounty-info">\' +\n' +
+    '      \'<div class="profile-bounty-title">\' + escH(b.title) + \'</div>\' +\n' +
+    '      \'<div class="profile-bounty-meta"><span>\' + (b.status || "").toUpperCase() + \'</span></div></div>\' +\n' +
+    '      \'<div class="profile-bounty-reward">💰 \' + escH(b.rewardFormatted) + \'</div></div>\';\n' +
+    '  }).join("");\n' +
+    '  container.innerHTML = html;\n' +
+    '}\n' +
+    'function scrollToBounty(id) {\n' +
+    '  var card = document.querySelector(".bounty-card[data-id=\'" + id + "\']");\n' +
+    '  if (card) { card.scrollIntoView({ behavior: "smooth", block: "center" }); card.style.boxShadow = "0 0 20px rgba(0,212,255,0.5)"; setTimeout(function() { card.style.boxShadow = ""; }, 2000); }\n' +
+    '}\n' +
+    'function toggleProfileSection() {\n' +
+    '  var content = document.getElementById("profile-content");\n' +
+    '  var toggle = document.getElementById("profile-toggle");\n' +
+    '  if (content.classList.contains("collapsed")) {\n' +
+    '    content.classList.remove("collapsed"); toggle.textContent = "▼";\n' +
+    '  } else {\n' +
+    '    content.classList.add("collapsed"); toggle.textContent = "▶";\n' +
+    '  }\n' +
     '}\n' +
     '\n' +
     'function openClaimModal(bountyId) {\n' +
