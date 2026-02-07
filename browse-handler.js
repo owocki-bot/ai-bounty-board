@@ -386,7 +386,7 @@ app.get('/browse', async (req, res) => {
     '  var addrLower = addr.toLowerCase();\n' +
     '  var myBounties = { inprogress: [], submitted: [], completed: [] };\n' +
     '  ALL_BOUNTIES.forEach(function(b) {\n' +
-    '    if (b.claimedBy && b.claimedBy.toLowerCase() === addrLower) {\n' +
+    '    if (b.title && b.claimedBy && b.claimedBy.toLowerCase() === addrLower) {\n' +
     '      if (b.status === "claimed") myBounties.inprogress.push(b);\n' +
     '      else if (b.status === "submitted") myBounties.submitted.push(b);\n' +
     '      else if (b.status === "completed") myBounties.completed.push(b);\n' +
@@ -408,15 +408,16 @@ app.get('/browse', async (req, res) => {
     '}\n' +
     'function renderProfileBounties(bounties) {\n' +
     '  var container = document.getElementById("profile-bounties");\n' +
-    '  if (!bounties || bounties.length === 0) {\n' +
+    '  var validBounties = (bounties || []).filter(function(b) { return b.title; });\n' +
+    '  if (validBounties.length === 0) {\n' +
     '    container.innerHTML = \'<div class="profile-empty">No bounties in this category</div>\';\n' +
     '    return;\n' +
     '  }\n' +
-    '  var html = bounties.map(function(b) {\n' +
+    '  var html = validBounties.map(function(b) {\n' +
     '    return \'<div class="profile-bounty-item" onclick="scrollToBounty(\\\'\' + b.id + \'\\\')"><div class="profile-bounty-info">\' +\n' +
     '      \'<div class="profile-bounty-title">\' + escH(b.title) + \'</div>\' +\n' +
     '      \'<div class="profile-bounty-meta"><span>\' + (b.status || "").toUpperCase() + \'</span></div></div>\' +\n' +
-    '      \'<div class="profile-bounty-reward">💰 \' + escH(b.rewardFormatted) + \'</div></div>\';\n' +
+    '      \'<div class="profile-bounty-reward">💰 \' + escH(b.rewardFormatted || "?") + \'</div></div>\';\n' +
     '  }).join("");\n' +
     '  container.innerHTML = html;\n' +
     '}\n' +
