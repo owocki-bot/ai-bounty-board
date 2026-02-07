@@ -666,6 +666,12 @@ app.post('/bounties/:id/claim', async (req, res) => {
     return res.status(404).json({ error: 'Bounty not found' });
   }
   
+  // ANTI-GAMING: Prevent self-dealing (creator cannot claim own bounty)
+  if (bounty.creator && bounty.creator.toLowerCase() === address.toLowerCase()) {
+    console.log(`[SELF-DEAL BLOCKED] ${address} tried to claim own bounty ${req.params.id}`);
+    return res.status(403).json({ error: 'Cannot claim your own bounty' });
+  }
+  
   // Use atomic claim to prevent race conditions
   const claimed = await atomicClaim(req.params.id, address);
   
@@ -718,6 +724,27 @@ app.post('/bounties/:id/submit', async (req, res) => {
   }
   if (!submission) {
     return res.status(400).json({ error: 'submission required' });
+  }
+  
+  // ANTI-GAMING: Minimum work time (10 minutes for bounties > $20)
+  const reward = parseFloat(bounty.reward) / 1_000_000;
+  const MIN_WORK_TIME_MS = 10 * 60 * 1000; // 10 minutes
+  if (reward > 20 && bounty.claimedAt && (Date.now() - bounty.claimedAt) < MIN_WORK_TIME_MS) {
+    const waitMins = Math.ceil((MIN_WORK_TIME_MS - (Date.now() - bounty.claimedAt)) / 60000);
+    console.log(`[FAST SUBMIT BLOCKED] ${address} tried to submit ${req.params.id} too fast`);
+    return res.status(400).json({ 
+      error: `Please spend more time on the work. Wait ${waitMins} more minutes.`,
+      minWorkTimeMinutes: 10
+    });
+  }
+  
+  // ANTI-GAMING: Require proof URL for bounties > $30
+  const submissionStr = typeof submission === 'string' ? submission : JSON.stringify(submission);
+  if (reward > 30 && !proof && !submissionStr.includes('http')) {
+    console.log(`[NO PROOF BLOCKED] ${address} submitted ${req.params.id} without proof URL`);
+    return res.status(400).json({ 
+      error: 'Bounties over $30 require a proof URL (GitHub repo, deployed site, etc.)'
+    });
   }
   
   // Payload size check
