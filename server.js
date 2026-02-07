@@ -15,11 +15,11 @@ const app = express();
 app.use(cors());
 
 // ============ MOD WALLETS ============
-// Mods can approve submissions (except their own)
+// Mods can approve submissions (except their own - conflict of interest check)
 const MOD_WALLETS = [
   '0x4C3a28d81C52F5cA03cD7E1c8B3C02b396937ADC'.toLowerCase(), // Kevin
+  '0x8f69c8eb92ed068aa577ce1847d568b39b0d9ebf'.toLowerCase(), // Mutheu
   // Wastelander - TBD (need their wallet)
-  // Note: Mutheu (0x8f69c8eb92ed068aa577ce1847d568b39b0d9ebf) is excluded to avoid conflict of interest
 ];
 
 function isMod(address) {
