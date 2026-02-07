@@ -687,7 +687,13 @@ app.get('/mod', async (req, res) => {
   
   const pendingRows = pending.map(b => {
     const lastSub = b.submissions?.[b.submissions.length - 1];
-    const score = lastSub?.autogradeScore || '?';
+    // Calculate autograde score if not already present (for old submissions)
+    let score = lastSub?.autogradeScore;
+    if (score === undefined && lastSub) {
+      const gradeResult = autograde(b, lastSub.content, lastSub.proof);
+      score = gradeResult.score;
+    }
+    score = score !== undefined ? score : '?';
     const submittedAt = lastSub?.submittedAt ? new Date(lastSub.submittedAt).toLocaleString() : 'Unknown';
     const reward = (parseInt(b.reward || 0) / 1e6).toFixed(2);
     
@@ -799,7 +805,8 @@ app.get('/mod', async (req, res) => {
     <div class="wallet-bar">
       <span>Your wallet:</span>
       <input type="text" id="mod-wallet" placeholder="0x... (paste your mod wallet)">
-      <button onclick="setModWallet()">Connect</button>
+      <button id="connect-btn" onclick="setModWallet()">Connect</button>
+      <span id="wallet-status" style="color:#4ade80;display:none;">✓ Connected</span>
     </div>
     
     <div class="stats">
@@ -838,13 +845,24 @@ app.get('/mod', async (req, res) => {
   
   <script>
     let modWallet = localStorage.getItem('modWallet') || '';
-    if (modWallet) document.getElementById('mod-wallet').value = modWallet;
+    if (modWallet) {
+      document.getElementById('mod-wallet').value = modWallet;
+      document.getElementById('wallet-status').style.display = 'inline';
+      document.getElementById('connect-btn').textContent = 'Update';
+    }
     
     function setModWallet() {
-      modWallet = document.getElementById('mod-wallet').value.trim().toLowerCase();
+      const input = document.getElementById('mod-wallet').value.trim().toLowerCase();
+      if (!input || !input.startsWith('0x')) {
+        showToast('Enter a valid wallet address (0x...)', true);
+        return;
+      }
+      modWallet = input;
       localStorage.setItem('modWallet', modWallet);
       highlightConflicts();
-      showToast('Wallet set!');
+      document.getElementById('wallet-status').style.display = 'inline';
+      document.getElementById('connect-btn').textContent = 'Update';
+      showToast('Wallet connected! Conflicts highlighted.');
     }
     
     function highlightConflicts() {
