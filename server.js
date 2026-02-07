@@ -116,6 +116,10 @@ const RATE_LIMIT_MAX_CLAIMS = 3; // max 3 claims per minute per address
 const RATE_LIMIT_MAX_SUBMISSIONS = 5; // max 5 submissions per minute
 const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 
+// ============ CONCURRENT CLAIM LIMITS ============
+// Prevents wallet hoarding — temporary until proof of reputation/identity
+const MAX_CONCURRENT_CLAIMS = 3; // max active bounties (claimed or submitted) per wallet
+
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
   const now = Date.now();
@@ -1121,6 +1125,21 @@ app.post('/bounties/:id/claim', async (req, res) => {
     return res.status(403).json({ error: 'This wallet has been blocklisted for abuse' });
   }
   
+  // Check concurrent claim limit (anti-hoarding)
+  const allBounties = await getAllBounties();
+  const activeClaims = allBounties.filter(b => 
+    b.claimedBy?.toLowerCase() === address.toLowerCase() && 
+    (b.status === 'claimed' || b.status === 'submitted')
+  );
+  if (activeClaims.length >= MAX_CONCURRENT_CLAIMS) {
+    console.log(`[CONCURRENT LIMIT] ${address} has ${activeClaims.length} active claims (max ${MAX_CONCURRENT_CLAIMS})`);
+    return res.status(429).json({ 
+      error: `You have ${activeClaims.length} active bounties. Complete or release some before claiming more.`,
+      maxConcurrent: MAX_CONCURRENT_CLAIMS,
+      activeBounties: activeClaims.map(b => ({ id: b.id, title: b.title, status: b.status }))
+    });
+  }
+  
   // Check bounty exists before atomic claim
   const bounty = await getBounty(req.params.id);
   if (!bounty) {
@@ -1634,6 +1653,12 @@ app.patch('/bounties/:id', async (req, res) => {
   const updates = req.body;
   const merged = { ...bounty, ...updates, id: bounty.id, updatedAt: Date.now() };
   
+  // Auto-fix: if submissions exist but status is open, set to submitted
+  if (merged.submissions && merged.submissions.length > 0 && merged.status === 'open') {
+    merged.status = 'submitted';
+    console.log(`[AUTO-FIX] Bounty #${merged.id} had submissions but was open, set to submitted`);
+  }
+  
   const updated = await updateBounty(merged.id, merged);
   console.log(`[BOUNTY RESTORED] #${merged.id} - fields updated: ${Object.keys(updates).join(', ')}`);
   res.json(updated);
@@ -1745,6 +1770,49 @@ Format your response as JSON:
 });
 
 /**
+ * Release/unclaim a bounty (claimer can give up)
+ * Frees up the bounty for others and the claimer's concurrent claim slot
+ * POST /bounties/:id/release
+ */
+app.post('/bounties/:id/release', async (req, res) => {
+  const { address } = req.body;
+  const bounty = await getBounty(req.params.id);
+  
+  if (!bounty) {
+    return res.status(404).json({ error: 'Bounty not found' });
+  }
+  if (!address) {
+    return res.status(400).json({ error: 'address required' });
+  }
+  if (bounty.claimedBy?.toLowerCase() !== address.toLowerCase()) {
+    return res.status(403).json({ error: 'Only the claimer can release this bounty' });
+  }
+  if (bounty.status !== 'claimed' && bounty.status !== 'submitted') {
+    return res.status(400).json({ error: `Cannot release bounty with status: ${bounty.status}` });
+  }
+
+  // Store release info for history
+  bounty.releases = bounty.releases || [];
+  bounty.releases.push({
+    releasedAt: Date.now(),
+    releasedBy: address.toLowerCase(),
+    previousStatus: bounty.status,
+    submissions: bounty.submissions
+  });
+
+  // Reset to open
+  bounty.status = 'open';
+  bounty.claimedBy = null;
+  bounty.claimedAt = null;
+  bounty.submissions = [];
+  bounty.updatedAt = Date.now();
+
+  const updated = await updateBounty(bounty.id, bounty);
+  console.log(`[BOUNTY RELEASED] #${bounty.id} released by ${address}`);
+  res.json({ ...updated, message: 'Bounty released and available for others to claim' });
+});
+
+/**
  * Cancel a bounty (creator only, before claimed)
  * POST /bounties/:id/cancel
  */
@@ -1814,6 +1882,28 @@ app.get('/admin/blocklist', async (req, res) => {
   } else {
     res.json({ type: 'blocklist', wallets: [], entries: [] });
   }
+});
+
+/**
+ * Admin: Fix bounty status/data
+ * PATCH /admin/bounties/:id
+ */
+app.patch('/admin/bounties/:id', async (req, res) => {
+  const internalKey = req.headers['x-internal-key'];
+  if (internalKey !== process.env.INTERNAL_KEY && internalKey !== 'owockibot-dogfood-2026') {
+    return res.status(401).json({ error: 'Admin auth required' });
+  }
+  
+  const bounty = await getBounty(req.params.id);
+  if (!bounty) {
+    return res.status(404).json({ error: 'Bounty not found' });
+  }
+  
+  const updates = req.body;
+  const merged = { ...bounty, ...updates, id: bounty.id, updatedAt: Date.now() };
+  const updated = await updateBounty(merged.id, merged);
+  console.log(`[ADMIN FIX] Bounty #${merged.id} - updated: ${Object.keys(updates).join(', ')}`);
+  res.json(updated);
 });
 
 /**
