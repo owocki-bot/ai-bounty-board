@@ -407,7 +407,7 @@ app.get('/browse', async (req, res) => {
     '  ALL_BOUNTIES.forEach(function(b) {\n' +
     '    if (b.title && b.claimedBy && b.claimedBy.toLowerCase() === addrLower) {\n' +
     '      if (b.status === "claimed") myBounties.inprogress.push(b);\n' +
-    '      else if (b.status === "submitted") myBounties.submitted.push(b);\n' +
+    '      else if (b.status === "submitted" || b.status === "payment_pending") myBounties.submitted.push(b);\n' +
     '      else if (b.status === "completed") myBounties.completed.push(b);\n' +
     '    }\n' +
     '  });\n' +
