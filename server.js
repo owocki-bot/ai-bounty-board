@@ -1384,9 +1384,9 @@ app.post('/bounties/:id/submit', async (req, res) => {
       console.log(`[BOUNTY RELEASED] ${req.params.id} released from blocklisted wallet ${address}`);
     }
     
+    // Silent rejection - don't reveal blocklist status to attacker
     return res.status(403).json({ 
-      error: 'Wallet blocklisted for abuse. Submission rejected and bounty released.',
-      message: 'Your wallet has been blocked from the bounty board due to previous gaming/abuse. The bounty has been released for others to claim.'
+      error: 'Submission rejected'
     });
   }
   
