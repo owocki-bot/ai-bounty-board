@@ -100,6 +100,86 @@ function autograde(bounty, submission, proof) {
   return { score, passed, checks, metCount, totalReqs: checks.length };
 }
 
+/**
+ * Verify proof URL is live and reachable
+ * Returns { valid: true } or { valid: false, message: 'reason' }
+ */
+async function verifyProofUrl(url) {
+  if (!url) {
+    return { valid: false, message: 'No proof URL provided' };
+  }
+
+  // Check for placeholder URLs
+  const placeholders = [
+    'example.com', 'test.com', 'localhost', '127.0.0.1', 
+    'placeholder', 'yoursite.com', 'http://google.com', 
+    'https://google.com', 'github.com/username', 'tbd'
+  ];
+  
+  const urlLower = url.toLowerCase();
+  for (const placeholder of placeholders) {
+    if (urlLower.includes(placeholder)) {
+      return { 
+        valid: false, 
+        message: `Placeholder URL detected: "${placeholder}". Please provide your actual work URL.` 
+      };
+    }
+  }
+
+  // Check if URL is reachable
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    const response = await fetch(url, {
+      method: 'HEAD', // Just check headers, don't download content
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'owockibot-bounty-verifier/1.0'
+      }
+    });
+    
+    clearTimeout(timeout);
+    
+    if (response.status === 404) {
+      return { 
+        valid: false, 
+        message: `Proof URL returns 404 Not Found. Please verify the link works before submitting.` 
+      };
+    }
+    
+    if (response.status >= 500) {
+      return { 
+        valid: false, 
+        message: `Proof URL server error (${response.status}). Please fix the deployment or provide a working link.` 
+      };
+    }
+    
+    // 200-399 status codes = valid
+    if (response.status < 400) {
+      return { valid: true };
+    }
+    
+    return { 
+      valid: false, 
+      message: `Proof URL returned HTTP ${response.status}. Please provide a working link.` 
+    };
+    
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return { 
+        valid: false, 
+        message: 'Proof URL timed out. Please provide a working link that loads within 5 seconds.' 
+      };
+    }
+    
+    return { 
+      valid: false, 
+      message: `Could not reach proof URL: ${error.message}. Please verify the link works.` 
+    };
+  }
+}
+
 // ============ PAYLOAD SIZE LIMITS ============
 const MAX_JSON_SIZE = '10kb'; // Limit request body size (was 50kb)
 app.use(express.json({ limit: MAX_JSON_SIZE }));
@@ -1288,6 +1368,28 @@ app.post('/bounties/:id/submit', async (req, res) => {
     return res.status(400).json({ error: 'address required' });
   }
   
+  // ANTI-GAMING: Check blocklist FIRST (before any processing)
+  const blocklist = await getBlocklist();
+  if (blocklist.wallets.includes(address.toLowerCase())) {
+    console.log(`[BLOCKLISTED SUBMIT REJECTED] ${address} tried to submit bounty ${req.params.id}`);
+    
+    // Release the bounty immediately (reset to open)
+    const bounty = await getBounty(req.params.id);
+    if (bounty && bounty.claimedBy === address.toLowerCase()) {
+      bounty.status = 'open';
+      bounty.claimedBy = null;
+      bounty.claimedAt = null;
+      bounty.updatedAt = Date.now();
+      await updateBounty(bounty.id, bounty);
+      console.log(`[BOUNTY RELEASED] ${req.params.id} released from blocklisted wallet ${address}`);
+    }
+    
+    return res.status(403).json({ 
+      error: 'Wallet blocklisted for abuse. Submission rejected and bounty released.',
+      message: 'Your wallet has been blocked from the bounty board due to previous gaming/abuse. The bounty has been released for others to claim.'
+    });
+  }
+  
   // Rate limit check
   const rateCheck = checkRateLimit(address, 'submit');
   if (!rateCheck.allowed) {
@@ -1328,8 +1430,23 @@ app.post('/bounties/:id/submit', async (req, res) => {
   if (reward > 30 && !proof && !submissionStr.includes('http')) {
     console.log(`[NO PROOF BLOCKED] ${address} submitted ${req.params.id} without proof URL`);
     return res.status(400).json({ 
-      error: 'Bounties over $30 require a proof URL (GitHub repo, deployed site, etc.)'
+      error: 'Bounties over $30 require a proof URL (GitHub repo, deployed site, etc.)',
+      message: 'Please provide a link to your deployed work, GitHub repo, or other proof of completion.'
     });
+  }
+  
+  // PROOF URL VERIFICATION: Check if proof URL is live and reachable
+  if (proof && proof.includes('http')) {
+    const verification = await verifyProofUrl(proof);
+    if (!verification.valid) {
+      console.log(`[INVALID PROOF URL] ${address} submitted ${req.params.id} with invalid proof: ${verification.message}`);
+      return res.status(400).json({
+        error: 'Invalid proof URL',
+        message: verification.message,
+        hint: 'Please verify your link works before submitting. Test it in a browser first.'
+      });
+    }
+    console.log(`[PROOF VERIFIED] ${proof} is reachable`);
   }
   
   // Payload size check
