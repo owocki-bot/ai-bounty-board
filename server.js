@@ -200,6 +200,49 @@ const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 // Prevents wallet hoarding — temporary until proof of reputation/identity
 // Only counts 'claimed' (not yet submitted) — once you submit, slot frees up
 const MAX_PENDING_CLAIMS = 3; // max bounties claimed but not yet submitted per wallet
+const CLAIM_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hour claim expiry
+
+/**
+ * Periodically check for expired claims and reset them to open
+ * This prevents the 'Stuck Claim' bug (Issue #1)
+ */
+async function checkExpirations() {
+  console.log('[HEARTBEAT] Checking for expired claims...');
+  const allBounties = await getAllBounties();
+  const now = Date.now();
+  let expiredCount = 0;
+
+  for (const bounty of allBounties) {
+    if (bounty.status === 'claimed' && bounty.claimedAt) {
+      if ((now - bounty.claimedAt) > CLAIM_EXPIRY_MS) {
+        console.log(`[EXPIRY] Claim on bounty #${bounty.id} by ${bounty.claimedBy} has expired.`);
+        
+        // Penalize reputation for expired claim (non-blocking)
+        if (bounty.claimedBy) {
+          reputation.postBountyReputation(
+            bounty.claimedBy,
+            -5, // Penalty for expiration
+            'claim-expired',
+            `bounty-${bounty.id}`
+          ).catch(e => console.log(`[REPUTATION ERROR] ${e.message}`));
+        }
+
+        bounty.status = 'open';
+        bounty.claimedBy = null;
+        bounty.claimedAt = null;
+        bounty.updatedAt = now;
+        await updateBounty(bounty.id, bounty);
+        expiredCount++;
+      }
+    }
+  }
+  if (expiredCount > 0) {
+    console.log(`[HEARTBEAT] Cleaned up ${expiredCount} expired claims.`);
+  }
+}
+
+// Pulse the heartbeat every 10 minutes
+setInterval(checkExpirations, 10 * 60 * 1000);
 
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
@@ -1427,6 +1470,24 @@ app.post('/bounties/:id/submit', async (req, res) => {
   
   // ANTI-GAMING: Require proof URL for bounties > $30
   const submissionStr = typeof submission === 'string' ? submission : JSON.stringify(submission);
+  
+  // CLONING PROTECTION: Prevent identical submissions across different wallets
+  const submissionHash = ethers.keccak256(ethers.toUtf8Bytes(submissionStr + (proof || '')));
+  const isDuplicate = allBounties.some(b => 
+    b.id !== req.params.id && 
+    b.submissions && 
+    b.submissions.some(s => {
+      const sStr = typeof s.content === 'string' ? s.content : JSON.stringify(s.content);
+      const sHash = ethers.keccak256(ethers.toUtf8Bytes(sStr + (s.proof || '')));
+      return sHash === submissionHash;
+    })
+  );
+  
+  if (isDuplicate) {
+    console.log(`[CLONE DETECTED] ${address} attempted to submit a duplicate of an existing submission on bounty ${req.params.id}`);
+    return res.status(400).json({ error: 'Duplicate submission detected. Work must be original.' });
+  }
+
   if (reward > 30 && !proof && !submissionStr.includes('http')) {
     console.log(`[NO PROOF BLOCKED] ${address} submitted ${req.params.id} without proof URL`);
     return res.status(400).json({ 
