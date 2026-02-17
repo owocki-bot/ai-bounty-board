@@ -1,12 +1,12 @@
 /**
- * ERC-8004 Reputation Integration
- * Posts feedback to the Reputation Registry after bounty completions
+ * ERC-8004 Identity and Reputation Integration
+ * Verifies agent identity on-chain and posts feedback after bounty completions
  */
 
 const { ethers } = require('ethers');
 
 const REPUTATION_REGISTRY = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63';
-const IDENTITY_REGISTRY = '0x8004A169FB4a3325136EB29fA0ceB6D2e539a432';
+const IDENTITY_REGISTRY = '0x75f89FfbE5C25161cBC7C903C9d8eDaf42e7bA4e'; // Correct Base registry address
 
 const REPUTATION_ABI = [
   'function giveFeedback(uint256 agentId, int128 value, uint8 valueDecimals, string calldata tag1, string calldata tag2, string calldata endpoint, string calldata feedbackURI, bytes32 feedbackHash) external'
@@ -14,7 +14,9 @@ const REPUTATION_ABI = [
 
 const IDENTITY_ABI = [
   'function ownerOf(uint256 tokenId) external view returns (address)',
-  'function totalSupply() external view returns (uint256)'
+  'function totalSupply() external view returns (uint256)',
+  'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
+  'function getAgentURI(uint256 tokenId) external view returns (string)'
 ];
 
 // Known agent ID mappings (wallet -> ERC-8004 agentId)
@@ -58,20 +60,103 @@ function init() {
 }
 
 /**
+ * Check if a wallet has a registered ERC-8004 agent identity
+ * Queries the on-chain registry directly
+ */
+async function hasAgentIdentity(walletAddress) {
+  if (!identityContract) {
+    init();
+  }
+  if (!identityContract) return false;
+  
+  try {
+    // Try to get the first agent owned by this wallet
+    const agentId = await identityContract.tokenOfOwnerByIndex(walletAddress, 0);
+    return agentId > 0;
+  } catch {
+    // No agents owned by this wallet
+    return false;
+  }
+}
+
+/**
  * Look up agent ID by wallet address
- * First checks known mappings, then could scan registry (expensive)
+ * Queries the ERC-8004 registry on-chain, with known agents as fallback
  */
 async function getAgentId(walletAddress) {
   const normalized = walletAddress.toLowerCase();
   
-  // Check known agents first
+  // First try on-chain lookup
+  if (identityContract) {
+    try {
+      const agentId = await identityContract.tokenOfOwnerByIndex(walletAddress, 0);
+      if (agentId > 0) {
+        // Cache for future reference
+        KNOWN_AGENTS[normalized] = Number(agentId);
+        return Number(agentId);
+      }
+    } catch {
+      // Agent not found on-chain
+    }
+  }
+  
+  // Fallback to known agents
   if (KNOWN_AGENTS[normalized]) {
     return KNOWN_AGENTS[normalized];
   }
   
-  // Could scan registry here but that's expensive
-  // For now, return null if not in known list
   return null;
+}
+
+/**
+ * Get agent metadata from ERC-8004 registry
+ */
+async function getAgentMetadata(agentId) {
+  if (!identityContract) {
+    init();
+  }
+  if (!identityContract) return null;
+  
+  try {
+    const uri = await identityContract.getAgentURI(agentId);
+    
+    // Fetch metadata if it's a valid URL
+    if (uri.startsWith('http') || uri.startsWith('ipfs://')) {
+      const metadataUrl = uri.startsWith('ipfs://') 
+        ? `https://ipfs.io/ipfs/${uri.slice(7)}`
+        : uri;
+      
+      const response = await fetch(metadataUrl);
+      if (response.ok) {
+        return await response.json();
+      }
+    }
+    
+    return { uri };
+  } catch (err) {
+    console.error(`[REPUTATION] Failed to get metadata for agent ${agentId}:`, err.message);
+    return null;
+  }
+}
+
+/**
+ * Validate that a wallet can claim bounties (has ERC-8004 identity)
+ */
+async function validateBountyClaim(claimerAddress) {
+  const agentId = await getAgentId(claimerAddress);
+  
+  if (!agentId) {
+    return {
+      valid: false,
+      agentId: null,
+      reason: 'No ERC-8004 agent identity found. Register at https://erc8004.org first.',
+    };
+  }
+  
+  return {
+    valid: true,
+    agentId,
+  };
 }
 
 /**
@@ -215,7 +300,10 @@ async function postValidatorReputation(validatorAgentId) {
 
 module.exports = {
   init,
+  hasAgentIdentity,
   getAgentId,
+  getAgentMetadata,
+  validateBountyClaim,
   registerAgent,
   postBountyReputation,
   postCommitmentReputation,

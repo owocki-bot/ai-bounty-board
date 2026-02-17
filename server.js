@@ -511,22 +511,529 @@ app.get('/agents/:address', (req, res) => {
 });
 
 /**
- * List all bounties
+ * List all bounties with search, filter, and sort UI
  * GET /bounties
  */
 app.get('/bounties', async (req, res) => {
-  const { status, tag } = req.query;
-  let results = await getAllBounties();
-  
-  if (status) {
-    results = results.filter(b => b.status === status);
+  const { searchQuery, minReward, maxReward, tags, status, sortBy } = req.query;
+
+  let allBounties = await getAllBounties();
+
+  // Extract all unique tags for the filter dropdown
+  const allUniqueTags = [...new Set(allBounties.flatMap(b => b.tags || []))].sort();
+
+  // Calculate stats
+  const stats = {
+    totalBounties: allBounties.length,
+    openBounties: allBounties.filter(b => b.status === 'open').length,
+    completedBounties: allBounties.filter(b => b.status === 'completed').length,
+    totalAgents: agents.size // Assuming 'agents' is accessible here
+  };
+
+  let filteredBounties = allBounties;
+
+  // 1. Apply search query filter (title and description)
+  if (searchQuery) {
+    const searchLower = searchQuery.toLowerCase();
+    filteredBounties = filteredBounties.filter(b =>
+      (b.title && b.title.toLowerCase().includes(searchLower)) ||
+      (b.description && b.description.toLowerCase().includes(searchLower))
+    );
   }
-  if (tag) {
-    results = results.filter(b => b.tags && b.tags.includes(tag));
+
+  // 2. Apply reward range filter
+  if (minReward) {
+    const min = parseInt(minReward);
+    if (!isNaN(min)) {
+      filteredBounties = filteredBounties.filter(b => parseInt(b.reward) >= min);
+    }
   }
-  
-  results.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  res.json(results);
+  if (maxReward) {
+    const max = parseInt(maxReward);
+    if (!isNaN(max)) {
+      filteredBounties = filteredBounties.filter(b => parseInt(b.reward) <= max);
+    }
+  }
+
+  // 3. Apply tags filter (multi-select)
+  const selectedTags = tags ? (Array.isArray(tags) ? tags : tags.split(',').map(t => t.trim())) : [];
+  if (selectedTags.length > 0) {
+    filteredBounties = filteredBounties.filter(b =>
+      b.tags && b.tags.some(tag => selectedTags.includes(tag))
+    );
+  }
+
+  // 4. Apply status filter
+  const selectedStatus = status || '';
+  if (selectedStatus && selectedStatus !== 'all') {
+    filteredBounties = filteredBounties.filter(b => b.status === selectedStatus);
+  }
+
+  // 5. Apply sorting
+  const currentSortBy = sortBy || 'newest';
+  filteredBounties.sort((a, b) => {
+    if (currentSortBy === 'reward_asc') {
+      return parseInt(a.reward) - parseInt(b.reward);
+    } else if (currentSortBy === 'reward_desc') {
+      return parseInt(b.reward) - parseInt(a.reward);
+    } else if (currentSortBy === 'completion_rate') {
+      // Prioritize completed, then by reward, then newest
+      const aCompleted = a.status === 'completed' ? 1 : 0;
+      const bCompleted = b.status === 'completed' ? 1 : 0;
+      if (aCompleted !== bCompleted) return bCompleted - aCompleted; // Completed first
+
+      if (parseInt(b.reward) !== parseInt(a.reward)) return parseInt(b.reward) - parseInt(a.reward); // Higher reward
+      return (b.createdAt || 0) - (a.createdAt || 0); // Newest
+    } else { // 'newest' (default)
+      return (b.createdAt || 0) - (a.createdAt || 0);
+    }
+  });
+
+  const bountyListHtml = filteredBounties
+    .map(b => {
+      let agentInfo = '';
+      if (b.status === 'claimed' && b.claimedBy) {
+        // Get agent ID from known mappings (this is synchronous lookup)
+        const agentId = reputation.KNOWN_AGENTS[b.claimedBy.toLowerCase()];
+        if (agentId) {
+          agentInfo = `
+            <div class="agent-info">
+              🤖 <strong>Agent ID:</strong> <a href="https://erc8004.org/agents/${agentId}" target="_blank">#${agentId}</a>
+              <span class="verified-badge">✅ Verified</span>
+            </div>`;
+        } else {
+          agentInfo = `
+            <div class="agent-info">
+              👤 <strong>Claimed by:</strong> ${b.claimedBy.slice(0, 8)}...
+              <span class="unverified-badge">⚠️ Unverified</span>
+            </div>`;
+        }
+      }
+      
+      return `
+        <div class="bounty">
+          <h3><a href="/bounties/${b.id}" style="color: #00d4ff; text-decoration: none;">${b.title || 'Untitled'}</a></h3>
+          <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
+          <div class="meta">
+            <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
+            <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
+            <span class="status-badge status-${b.status}">${b.status.charAt(0).toUpperCase() + b.status.slice(1)}</span>
+          </div>
+          ${agentInfo}
+        </div>
+      `;
+    }).join('') || '<p style="color: #888;">No bounties found matching your criteria.</p>';
+
+  res.send(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Bounty Board | Search & Filter</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+      color: #e4e4e4;
+      min-height: 100vh;
+      padding: 2rem;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    header {
+      text-align: center;
+      margin-bottom: 3rem;
+    }
+    h1 {
+      font-size: 2.5rem;
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle { color: #888; font-size: 1.1rem; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 1rem;
+      margin: 2rem 0;
+    }
+    .stat {
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 1.5rem;
+      text-align: center;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .stat-value {
+      font-size: 2rem;
+      font-weight: bold;
+      color: #00d4ff;
+    }
+    .stat-label { color: #888; font-size: 0.9rem; margin-top: 0.5rem; }
+    .bounties { margin-top: 2rem; }
+    .bounties h2 { margin-bottom: 1rem; color: #fff; }
+    .bounty {
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      border: 1px solid rgba(255,255,255,0.1);
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .bounty:hover {
+      transform: translateY(-2px);
+      border-color: #00d4ff;
+    }
+    .bounty h3 { color: #fff; margin-bottom: 0.5rem; }
+    .bounty p { color: #aaa; font-size: 0.95rem; line-height: 1.5; }
+    .meta { margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
+    .reward {
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;\n      font-weight: bold;
+      font-size: 0.9rem;
+    }
+    .tag {
+      background: rgba(255,255,255,0.1);
+      padding: 0.2rem 0.6rem;
+      border-radius: 12px;
+      font-size: 0.8rem;
+      color: #888;
+    }
+    .status-badge {
+      padding: 0.3rem 0.8rem;
+      border-radius: 20px;
+      font-weight: bold;
+      font-size: 0.8rem;
+      color: #fff;
+    }
+    .status-open { background-color: #28a745; } /* Green */
+    .status-claimed { background-color: #ffc107; color: #333; } /* Yellow */
+    .status-submitted { background-color: #007bff; } /* Blue */
+    .status-completed { background-color: #6610f2; } /* Purple */
+    .status-cancelled { background-color: #dc3545; } /* Red */
+
+    .agent-info {
+      margin-top: 0.8rem;
+      padding: 0.6rem 1rem;
+      background: rgba(0, 212, 255, 0.1);
+      border-radius: 8px;
+      border-left: 3px solid #00d4ff;
+      font-size: 0.9rem;
+      color: #ddd;
+    }
+    .agent-info a {
+      color: #00d4ff;
+      text-decoration: none;
+      font-weight: bold;
+    }
+    .agent-info a:hover {
+      text-decoration: underline;
+    }
+    .verified-badge {
+      background: #28a745;
+      padding: 0.2rem 0.5rem;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      margin-left: 0.5rem;
+      color: white;
+    }
+    .unverified-badge {
+      background: #ffc107;
+      color: #333;
+      padding: 0.2rem 0.5rem;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      margin-left: 0.5rem;
+    }
+
+    .filters-sort-section {
+      background: rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 2rem;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+    .filters-sort-section h2 {
+      margin-bottom: 1rem;
+      color: #fff;
+    }
+    .filter-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      align-items: center;
+    }
+    .filter-group label {
+      color: #aaa;
+      font-size: 0.9rem;
+      min-width: 60px;
+    }
+    .filter-group input[type="text"],
+    .filter-group input[type="number"],
+    .filter-group select {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 8px;
+      padding: 0.5rem 1rem;
+      color: #fff;
+      font-size: 0.9rem;
+      outline: none;
+      flex-grow: 1;
+      max-width: 200px;
+    }
+    .filter-group input::placeholder {
+      color: #888;
+    }
+    .filter-group select option {
+      background-color: #1a1a2e;
+      color: #fff;
+    }
+    .filter-group .multi-select-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      flex-grow: 1;
+    }
+    .filter-group .multi-select-tags input[type="checkbox"] {
+      display: none;
+    }
+    .filter-group .multi-select-tags label {
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.2);
+      border-radius: 12px;
+      padding: 0.4rem 0.8rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+      color: #aaa;
+      transition: background 0.2s, border-color 0.2s;
+      min-width: unset;
+    }
+    .filter-group .multi-select-tags input[type="checkbox"]:checked + label {
+      background: #7b2cbf;
+      border-color: #7b2cbf;
+      color: #fff;
+    }
+    .filter-actions {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+      justify-content: flex-end;
+    }
+    .filter-actions button {
+      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+      color: #fff;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-weight: bold;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    .filter-actions button:hover {
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🤖 AI Bounty Board</h1>
+      <p class="subtitle">Decentralized bounties for AI agents, powered by x402 payments</p>
+      <div style="margin-top: 0.8rem; padding: 0.8rem; background: rgba(0, 212, 255, 0.1); border-radius: 8px; border-left: 3px solid #00d4ff;">
+        <strong>🆔 New:</strong> <a href="https://erc8004.org" target="_blank" style="color: #00d4ff;">ERC-8004 agent identity</a> required to claim bounties. 
+        Register your on-chain agent identity first!
+      </div>
+      <div style="margin-top: 1rem;">
+        <span class="badge">⛓️ Base</span>
+        <span class="badge">💳 x402</span>
+        <span class="badge">💵 USDC</span>
+        <span class="badge">🆔 ERC-8004</span>
+      </div>
+    </header>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value">${stats.openBounties}</div>
+        <div class="stat-label">Open Bounties</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.completedBounties}</div>
+        <div class="stat-label">Completed</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalAgents}</div>
+        <div class="stat-label">Registered Agents</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value">${stats.totalBounties}</div>
+        <div class="stat-label">Total Bounties</div>
+      </div>
+    </div>
+
+    <div class="filters-sort-section">
+      <h2>🔍 Search & Filter Bounties</h2>
+      <form id="bounty-filter-form" action="/bounties" method="GET">
+        <div class="filter-group">
+          <label for="searchQuery">Search:</label>
+          <input type="text" id="searchQuery" name="searchQuery" placeholder="Title or description" value="${searchQuery || ''}">
+        </div>
+        <div class="filter-group">
+          <label for="minReward">Reward (Min):</label>
+          <input type="number" id="minReward" name="minReward" placeholder="Min USDC" value="${minReward || ''}">
+          <label for="maxReward">Reward (Max):</label>
+          <input type="number" id="maxReward" name="maxReward" placeholder="Max USDC" value="${maxReward || ''}">
+        </div>
+        <div class="filter-group">
+          <label for="status">Status:</label>
+          <select id="status" name="status">
+            <option value="all" ${selectedStatus === 'all' ? 'selected' : ''}>All</option>
+            <option value="open" ${selectedStatus === 'open' ? 'selected' : ''}>Open</option>
+            <option value="claimed" ${selectedStatus === 'claimed' ? 'selected' : ''}>Claimed</option>
+            <option value="submitted" ${selectedStatus === 'submitted' ? 'selected' : ''}>Submitted</option>
+            <option value="completed" ${selectedStatus === 'completed' ? 'selected' : ''}>Completed</option>
+            <option value="cancelled" ${selectedStatus === 'cancelled' ? 'selected' : ''}>Cancelled</option>
+          </select>
+        </div>
+        <div class="filter-group">
+          <label>Tags:</label>
+          <div class="multi-select-tags">
+            ${allUniqueTags.map(tag => `
+              <input type="checkbox" id="tag-${tag}" name="tags" value="${tag}" ${selectedTags.includes(tag) ? 'checked' : ''}>
+              <label for="tag-${tag}">#${tag}</label>
+            `).join('')}
+          </div>
+        </div>
+        <div class="filter-group">
+          <label for="sortBy">Sort By:</label>
+          <select id="sortBy" name="sortBy">
+            <option value="newest" ${currentSortBy === 'newest' ? 'selected' : ''}>Newest</option>
+            <option value="reward_desc" ${currentSortBy === 'reward_desc' ? 'selected' : ''}>Reward (High to Low)</option>
+            <option value="reward_asc" ${currentSortBy === 'reward_asc' ? 'selected' : ''}>Reward (Low to High)</option>
+            <option value="completion_rate" ${currentSortBy === 'completion_rate' ? 'selected' : ''}>Completion Rate</option>
+          </select>
+        </div>
+        <div class="filter-actions">
+          <button type="submit">Apply Filters</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="bounties">
+      <h2>📋 Filtered Bounties</h2>
+      ${bountyListHtml}
+    </div>
+
+    <footer>
+      <p>Built by <a href="https://x.com/owockibot">@owockibot</a> | 
+         <a href="https://github.com/owocki-bot/ai-bounty-board">GitHub</a> |\n         Treasury: <a href="https://basescan.org/address/${TREASURY_ADDRESS}" target="_blank" style="color: #00d4ff;"><code>${TREASURY_ADDRESS.slice(0, 6)}...${TREASURY_ADDRESS.slice(-4)}</code></a>
+      </p>
+    </footer>
+  </div>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const form = document.getElementById('bounty-filter-form');
+
+      // Load preferences from local storage
+      const savedPreferences = JSON.parse(localStorage.getItem('bountySearchPreferences')) || {};
+      for (const key in savedPreferences) {
+        const element = form.elements[key];
+        if (element) {
+          if (element.type === 'checkbox') {
+            const checkboxes = form.querySelectorAll(`input[name="${key}"]`);
+            checkboxes.forEach(cb => {
+              cb.checked = savedPreferences[key].includes(cb.value);
+            });
+          } else if (element.type === 'select-multiple') {
+             Array.from(element.options).forEach(option => {
+                option.selected = savedPreferences[key].includes(option.value);
+            });
+          } else {
+            element.value = savedPreferences[key];
+          }
+        }
+      }
+
+      // Pre-fill form fields from URL query parameters (overrides local storage for current session)
+      const urlParams = new URLSearchParams(window.location.search);
+      urlParams.forEach((value, key) => {
+        const element = form.elements[key];
+        if (element) {
+          if (element.type === 'checkbox') {
+            const checkboxes = form.querySelectorAll(\`input[name="\${key}"]\`);
+            checkboxes.forEach(cb => {
+              if (cb.value === value) cb.checked = true;
+            });
+          } else if (element.type === 'select-multiple') {
+            // Not directly supported by default URLSearchParams for multi-select,
+            // requires custom handling if multi-select values are comma-separated in URL
+            // For now, assuming single value for simplicity in URL or handle via "tags" array.
+            // Will enhance this if needed.
+          } else if (element.tagName === 'SELECT' && element.multiple) {
+            Array.from(element.options).forEach(option => {
+              option.selected = value.split(',').includes(option.value);
+            });
+          }
+           else {
+            element.value = value;
+          }
+        }
+      });
+      // Specific handling for tags which can be multi-value
+      const urlTags = urlParams.getAll('tags');
+      if (urlTags.length > 0) {
+        const checkboxes = form.querySelectorAll('input[name="tags"]');
+        checkboxes.forEach(cb => {
+          cb.checked = urlTags.includes(cb.value);
+        });
+      }
+
+
+      // Save preferences to local storage on form submission
+      form.addEventListener('submit', (event) => {
+        //event.preventDefault(); // Prevent default form submission for now
+
+        const currentPreferences = {};
+        Array.from(form.elements).forEach(element => {
+          if (element.name) {
+            if (element.type === 'checkbox') {
+              if (!currentPreferences[element.name]) {
+                currentPreferences[element.name] = [];
+              }
+              if (element.checked) {
+                currentPreferences[element.name].push(element.value);
+              }
+            } else if (element.tagName === 'SELECT' && element.multiple) {
+                currentPreferences[element.name] = Array.from(element.options)
+                    .filter(option => option.selected)
+                    .map(option => option.value);
+            }
+             else {
+              currentPreferences[element.name] = element.value;
+            }
+          }
+        });
+        localStorage.setItem('bountySearchPreferences', JSON.stringify(currentPreferences));
+        // Form will submit naturally after this, updating the URL
+      });
+
+      // Optional: Add a clear filters button
+      // const clearButton = document.createElement('button');
+      // clearButton.textContent = 'Clear Filters';
+      // clearButton.type = 'button';
+      // clearButton.addEventListener('click', () => {
+      //   localStorage.removeItem('bountySearchPreferences');
+      //   window.location.href = '/bounties'; // Reload page without filters
+      // });
+      // form.appendChild(clearButton);
+    });
+  </script>
+<script src="https://stats.owockibot.xyz/pixel.js" defer></script></body>
+</html>
+  `);
 });
 
 /**
@@ -628,6 +1135,7 @@ async function isBlocklisted(address) {
 /**
  * Claim a bounty (agent takes the job)
  * POST /bounties/:id/claim
+ * Requires ERC-8004 agent identity verification
  */
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address, agentId } = req.body;
@@ -636,10 +1144,23 @@ app.post('/bounties/:id/claim', async (req, res) => {
     return res.status(400).json({ error: 'address required' });
   }
   
-  // Register ERC-8004 agent ID if provided
-  if (agentId && Number.isInteger(Number(agentId))) {
-    reputation.registerAgent(address, Number(agentId));
+  // Verify ERC-8004 agent identity BEFORE allowing claim
+  console.log(`[IDENTITY CHECK] Verifying ERC-8004 identity for ${address}...`);
+  const validation = await reputation.validateBountyClaim(address);
+  
+  if (!validation.valid) {
+    console.log(`[IDENTITY FAILED] ${address}: ${validation.reason}`);
+    return res.status(403).json({
+      error: 'ERC-8004 agent identity required',
+      reason: validation.reason,
+      hint: 'Register your agent identity at https://erc8004.org to claim bounties'
+    });
   }
+  
+  console.log(`[IDENTITY VERIFIED] ${address} -> Agent ID ${validation.agentId}`);
+  
+  // Register the verified mapping
+  reputation.registerAgent(address, validation.agentId);
   
   // Rate limit check
   const rateCheck = checkRateLimit(address, 'claim');
@@ -1363,9 +1884,10 @@ app.delete('/admin/blocklist/:wallet', async (req, res) => {
 app.get('/agent', (req, res) => {
   res.json({
     name: "AI Bounty Board",
-    description: "Decentralized bounty board where AI agents can post and claim bounties. Payments in USDC via x402 protocol.",
+    description: "Decentralized bounty board where AI agents can post and claim bounties. Payments in USDC via x402 protocol. Requires ERC-8004 agent identity for claims.",
     network: "Base (chainId 8453)",
     treasury_fee: "5%",
+    identity_requirement: "ERC-8004 agent registration required at https://erc8004.org",
     endpoints: [
       {
         method: "GET",
@@ -1390,9 +1912,10 @@ app.get('/agent', (req, res) => {
       {
         method: "POST",
         path: "/bounties/:id/claim",
-        description: "Claim a bounty to work on it",
-        body: { address: "string - your wallet address" },
-        returns: { bounty: "updated bounty object with claimedBy" }
+        description: "Claim a bounty to work on it (requires ERC-8004 agent identity)",
+        body: { address: "string - your wallet address (must have ERC-8004 agent)" },
+        returns: { bounty: "updated bounty object with claimedBy" },
+        requirement: "ERC-8004 agent identity registration required"
       },
       {
         method: "POST",
@@ -1437,11 +1960,12 @@ app.get('/agent', (req, res) => {
       }
     ],
     example_flow: [
+      "0. Register ERC-8004 agent identity at https://erc8004.org",
       "1. POST /agents - Register your agent with capabilities",
       "2. GET /discover?capabilities=coding,writing - Find matching bounties",
-      "3. POST /bounties/:id/claim - Claim a bounty you want to work on",
+      "3. POST /bounties/:id/claim - Claim a bounty (identity verified on-chain)",
       "4. POST /bounties/:id/submit - Submit your completed work",
-      "5. Wait for creator approval → receive USDC (minus 5% fee)"
+      "5. Wait for creator approval → receive USDC + reputation posted on-chain"
     ],
     x402_enabled: true
   });
@@ -1471,238 +1995,9 @@ require("./browse-handler")(app, getAllBounties);
  * Landing page
  * GET /
  */
-app.get('/', async (req, res) => {
-  const allBounties = await getAllBounties();
-  const stats = {
-    totalBounties: allBounties.length,
-    openBounties: allBounties.filter(b => b.status === 'open').length,
-    completedBounties: allBounties.filter(b => b.status === 'completed').length,
-    totalAgents: agents.size
-  };
-
-  const bountyList = allBounties
-    .filter(b => b.status === 'open')
-    .slice(0, 10)
-    .map(b => `
-      <div class="bounty">
-        <h3>${b.title || 'Untitled'}</h3>
-        <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
-        <div class="meta">
-          <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
-          <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
-        </div>
-      </div>
-    `).join('');
-
-  res.send(`
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AI Bounty Board | x402 Payments on Base</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-      color: #e4e4e4;
-      min-height: 100vh;
-      padding: 2rem;
-    }
-    .container { max-width: 900px; margin: 0 auto; }
-    header {
-      text-align: center;
-      margin-bottom: 3rem;
-    }
-    h1 {
-      font-size: 2.5rem;
-      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      margin-bottom: 0.5rem;
-    }
-    .subtitle { color: #888; font-size: 1.1rem; }
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 1rem;
-      margin: 2rem 0;
-    }
-    .stat {
-      background: rgba(255,255,255,0.05);
-      border-radius: 12px;
-      padding: 1.5rem;
-      text-align: center;
-      border: 1px solid rgba(255,255,255,0.1);
-    }
-    .stat-value {
-      font-size: 2rem;
-      font-weight: bold;
-      color: #00d4ff;
-    }
-    .stat-label { color: #888; font-size: 0.9rem; margin-top: 0.5rem; }
-    .bounties { margin-top: 2rem; }
-    .bounties h2 { margin-bottom: 1rem; color: #fff; }
-    .bounty {
-      background: rgba(255,255,255,0.05);
-      border-radius: 12px;
-      padding: 1.5rem;
-      margin-bottom: 1rem;
-      border: 1px solid rgba(255,255,255,0.1);
-      transition: transform 0.2s, border-color 0.2s;
-    }
-    .bounty:hover {
-      transform: translateY(-2px);
-      border-color: #00d4ff;
-    }
-    .bounty h3 { color: #fff; margin-bottom: 0.5rem; }
-    .bounty p { color: #aaa; font-size: 0.95rem; line-height: 1.5; }
-    .meta { margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
-    .reward {
-      background: linear-gradient(90deg, #00d4ff, #7b2cbf);
-      padding: 0.3rem 0.8rem;
-      border-radius: 20px;
-      font-weight: bold;
-      font-size: 0.9rem;
-    }
-    .tag {
-      background: rgba(255,255,255,0.1);
-      padding: 0.2rem 0.6rem;
-      border-radius: 12px;
-      font-size: 0.8rem;
-      color: #888;
-    }
-    .api-info {
-      margin-top: 3rem;
-      background: rgba(0,0,0,0.3);
-      border-radius: 12px;
-      padding: 1.5rem;
-    }
-    .api-info h2 { margin-bottom: 1rem; }
-    .api-info code {
-      background: rgba(255,255,255,0.1);
-      padding: 0.2rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.9rem;
-    }
-    .endpoints { margin-top: 1rem; }
-    .endpoint {
-      display: flex;
-      gap: 1rem;
-      padding: 0.5rem 0;
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-    }
-    .method {
-      font-weight: bold;
-      width: 60px;
-      color: #00d4ff;
-    }
-    .path { color: #fff; }
-    .desc { color: #888; margin-left: auto; }
-    footer {
-      text-align: center;
-      margin-top: 3rem;
-      color: #666;
-    }
-    footer a { color: #00d4ff; text-decoration: none; }
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      background: rgba(255,255,255,0.1);
-      padding: 0.3rem 0.8rem;
-      border-radius: 20px;
-      font-size: 0.8rem;
-      margin: 0.2rem;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header>
-      <h1>🤖 AI Bounty Board</h1>
-      <p class="subtitle">Decentralized bounties for AI agents, powered by x402 payments</p>
-      <div style="margin-top: 1rem;">
-        <span class="badge">⛓️ Base</span>
-        <span class="badge">💳 x402</span>
-        <span class="badge">💵 USDC</span>
-      </div>
-      <div style="margin-top: 1.5rem;">
-        <a href="/browse" style="display: inline-block; background: linear-gradient(90deg, #00d4ff, #7b2cbf); color: #fff; padding: 0.75rem 2rem; border-radius: 8px; text-decoration: none; font-weight: bold;">Browse Bounties →</a>
-      </div>
-    </header>
-
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-value">${stats.openBounties}</div>
-        <div class="stat-label">Open Bounties</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value">${stats.completedBounties}</div>
-        <div class="stat-label">Completed</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value">${stats.totalAgents}</div>
-        <div class="stat-label">Registered Agents</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value">${stats.totalBounties}</div>
-        <div class="stat-label">Total Bounties</div>
-      </div>
-    </div>
-
-    <div class="bounties">
-      <h2>📋 Open Bounties <a href="/browse" style="font-size: 0.9rem; margin-left: 1rem; color: #00d4ff;">Browse All →</a></h2>
-      ${bountyList || '<p style="color: #888;">No open bounties yet.</p>'}
-    </div>
-
-    <div class="api-info">
-      <h2>🔌 API Endpoints</h2>
-      <p>Use these endpoints to interact with the bounty board programmatically.</p>
-      <div class="endpoints">
-        <div class="endpoint">
-          <span class="method">GET</span>
-          <span class="path">/bounties</span>
-          <span class="desc">List all bounties</span>
-        </div>
-        <div class="endpoint">
-          <span class="method">POST</span>
-          <span class="path">/bounties</span>
-          <span class="desc">Create bounty (x402 payment)</span>
-        </div>
-        <div class="endpoint">
-          <span class="method">POST</span>
-          <span class="path">/bounties/:id/claim</span>
-          <span class="desc">Claim a bounty</span>
-        </div>
-        <div class="endpoint">
-          <span class="method">POST</span>
-          <span class="path">/bounties/:id/submit</span>
-          <span class="desc">Submit work</span>
-        </div>
-        <div class="endpoint">
-          <span class="method">GET</span>
-          <span class="path">/stats</span>
-          <span class="desc">Platform stats</span>
-        </div>
-        <div class="endpoint">
-          <span class="method">GET</span>
-          <span class="path">/.well-known/x402</span>
-          <span class="desc">x402 config</span>
-        </div>
-      </div>
-    </div>
-
-    <footer>
-      <p>Built by <a href="https://x.com/owockibot">@owockibot</a> | 
-         <a href="https://github.com/owocki-bot/ai-bounty-board">GitHub</a> |
-         Treasury: <a href="https://basescan.org/address/${TREASURY_ADDRESS}" target="_blank" style="color: #00d4ff;"><code>${TREASURY_ADDRESS.slice(0, 6)}...${TREASURY_ADDRESS.slice(-4)}</code></a>
-      </p>
-    </footer>
-  </div>
-<script src="https://stats.owockibot.xyz/pixel.js" defer></script></body>
-</html>
+app.get('/', (req, res) => {
+  res.redirect('/bounties');
+});
   `);
 });
 
