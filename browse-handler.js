@@ -2,6 +2,9 @@
  * Human-browsable bounty page with 1-click claim UI
  * GET /browse
  */
+
+const reputation = require('./reputation');
+
 function registerBrowseHandler(app, getAllBounties) {
 
 app.get('/browse', async (req, res) => {
@@ -47,15 +50,25 @@ app.get('/browse', async (req, res) => {
     completed: '#8b5cf6', cancelled: '#ef4444'
   };
 
-  const bountyCards = paginatedBounties.map(b => {
+  const bountyCards = await Promise.all(paginatedBounties.map(async b => {
     const subs = (b.submissions || []);
     const tagsHtml = (b.tags || []).map(t => '<a href="/browse?tag=' + t + '" class="tag">#' + esc(t) + '</a>').join(' ');
     const reqsHtml = (b.requirements && b.requirements.length > 0)
       ? '<div class="requirements"><strong>Requirements:</strong><ul>' + b.requirements.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul></div>'
       : '';
-    const claimedMeta = b.claimedBy
-      ? '<div class="meta-item"><span class="meta-label">Claimed by</span><span class="meta-value">' + b.claimedBy.slice(0,6) + '...' + b.claimedBy.slice(-4) + '</span></div>'
-      : '';
+    
+    // Check for ERC-8004 agent identity if bounty is claimed
+    let claimedMeta = '';
+    if (b.claimedBy) {
+      const identityCheck = await reputation.verifyAgentIdentity(b.claimedBy);
+      const agentBadge = identityCheck.hasIdentity 
+        ? '<a href="https://erc8004.org/agents/' + identityCheck.agentId + '" target="_blank" class="agent-badge">✅ Agent #' + identityCheck.agentId + '</a>'
+        : '';
+      
+      claimedMeta = '<div class="meta-item"><span class="meta-label">Claimed by</span>' +
+        '<span class="meta-value">' + b.claimedBy.slice(0,6) + '...' + b.claimedBy.slice(-4) + 
+        (agentBadge ? ' ' + agentBadge : '') + '</span></div>';
+    }
     const subsHtml = subs.length > 0
       ? '<div class="submissions-section"><h4 class="submissions-title">📝 Submissions (' + subs.length + ')</h4>' +
         subs.map(s => {
@@ -97,7 +110,9 @@ app.get('/browse', async (req, res) => {
       claimedMeta + '</div>' +
       reqsHtml + subsHtml +
       '<div class="bounty-actions">' + actionBtns + '</div></div>';
-  }).join('');
+  }));
+
+  const bountyCardsHtml = bountyCards.join('');
 
   const bountiesJson = JSON.stringify(allBounties.map(b => ({
     id: b.id, title: b.title, description: b.description, status: b.status,
@@ -136,7 +151,7 @@ app.get('/browse', async (req, res) => {
   }
 
   const gridHtml = paginatedBounties.length > 0
-    ? '<div class="bounties-grid">' + bountyCards + '</div>' + paginationHtml
+    ? '<div class="bounties-grid">' + bountyCardsHtml + '</div>' + paginationHtml
     : '<div class="empty-state"><h2>No bounties found</h2><p>Try adjusting your filters or check back later.</p></div>';
 
   const statusFilterActive = (s) => (!status || status === 'all') && s === 'all' || status === s ? ' active' : '';
@@ -183,6 +198,8 @@ app.get('/browse', async (req, res) => {
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
     '.tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }\n' +
+    '.agent-badge { display: inline-block; background: rgba(16, 185, 129, 0.15); color: #10b981; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; text-decoration: none; margin-left: 0.5rem; border: 1px solid rgba(16, 185, 129, 0.3); }\n' +
+    '.agent-badge:hover { background: rgba(16, 185, 129, 0.25); text-decoration: none; }\n' +
     '.bounty-meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 0.75rem; padding: 1rem 0; border-top: 1px solid rgba(255,255,255,0.1); border-bottom: 1px solid rgba(255,255,255,0.1); margin-bottom: 1rem; }\n' +
     '.meta-item { display: flex; flex-direction: column; }\n' +
     '.meta-label { font-size: 0.7rem; color: #666; text-transform: uppercase; }\n' +

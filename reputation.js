@@ -1,12 +1,12 @@
 /**
- * ERC-8004 Identity and Reputation Integration
- * Verifies agent identity on-chain and posts feedback after bounty completions
+ * ERC-8004 Reputation Integration
+ * Posts feedback to the Reputation Registry after bounty completions
  */
 
 const { ethers } = require('ethers');
 
 const REPUTATION_REGISTRY = '0x8004BAa17C55a88189AE136b182e5fdA19dE9b63';
-const IDENTITY_REGISTRY = '0x75f89FfbE5C25161cBC7C903C9d8eDaf42e7bA4e'; // Correct Base registry address
+const IDENTITY_REGISTRY = '0x75f89FfbE5C25161cBC7C903C9d8eDaf42e7bA4e';
 
 const REPUTATION_ABI = [
   'function giveFeedback(uint256 agentId, int128 value, uint8 valueDecimals, string calldata tag1, string calldata tag2, string calldata endpoint, string calldata feedbackURI, bytes32 feedbackHash) external'
@@ -14,9 +14,7 @@ const REPUTATION_ABI = [
 
 const IDENTITY_ABI = [
   'function ownerOf(uint256 tokenId) external view returns (address)',
-  'function totalSupply() external view returns (uint256)',
-  'function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256)',
-  'function getAgentURI(uint256 tokenId) external view returns (string)'
+  'function totalSupply() external view returns (uint256)'
 ];
 
 // Known agent ID mappings (wallet -> ERC-8004 agentId)
@@ -37,9 +35,25 @@ let wallet = null;
 let reputationContract = null;
 let identityContract = null;
 
-function init() {
-  if (reputationContract) return true;
-  
+// Initialize read-only contracts (like identity registry)
+function initReadContracts() {
+  if (provider) return true; // Already initialized
+
+  try {
+    provider = new ethers.JsonRpcProvider('https://mainnet.base.org');
+    identityContract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, provider);
+    console.log('[REPUTATION] Read contracts initialized.');
+    return true;
+  } catch (err) {
+    console.error('[REPUTATION] Failed to initialize read contracts:', err.message);
+    return false;
+  }
+}
+
+// Initialize write contracts (requires private key for reputation posting)
+function initWriteContracts() {
+  if (reputationContract) return true; // Already initialized
+
   const privateKey = process.env.OWOCKIBOT_PRIVATE_KEY;
   if (!privateKey) {
     console.log('[REPUTATION] No wallet key configured - reputation posting disabled');
@@ -47,116 +61,32 @@ function init() {
   }
   
   try {
-    provider = new ethers.JsonRpcProvider('https://mainnet.base.org');
+    if (!provider) initReadContracts(); // Ensure provider is set
     wallet = new ethers.Wallet(privateKey, provider);
     reputationContract = new ethers.Contract(REPUTATION_REGISTRY, REPUTATION_ABI, wallet);
-    identityContract = new ethers.Contract(IDENTITY_REGISTRY, IDENTITY_ABI, provider);
-    console.log('[REPUTATION] Initialized with wallet:', wallet.address);
+    console.log('[REPUTATION] Write contracts initialized with wallet:', wallet.address);
     return true;
   } catch (err) {
-    console.error('[REPUTATION] Failed to initialize:', err.message);
-    return false;
-  }
-}
-
-/**
- * Check if a wallet has a registered ERC-8004 agent identity
- * Queries the on-chain registry directly
- */
-async function hasAgentIdentity(walletAddress) {
-  if (!identityContract) {
-    init();
-  }
-  if (!identityContract) return false;
-  
-  try {
-    // Try to get the first agent owned by this wallet
-    const agentId = await identityContract.tokenOfOwnerByIndex(walletAddress, 0);
-    return agentId > 0;
-  } catch {
-    // No agents owned by this wallet
+    console.error('[REPUTATION] Failed to initialize write contracts:', err.message);
     return false;
   }
 }
 
 /**
  * Look up agent ID by wallet address
- * Queries the ERC-8004 registry on-chain, with known agents as fallback
+ * First checks known mappings, then could scan registry (expensive)
  */
 async function getAgentId(walletAddress) {
   const normalized = walletAddress.toLowerCase();
   
-  // First try on-chain lookup
-  if (identityContract) {
-    try {
-      const agentId = await identityContract.tokenOfOwnerByIndex(walletAddress, 0);
-      if (agentId > 0) {
-        // Cache for future reference
-        KNOWN_AGENTS[normalized] = Number(agentId);
-        return Number(agentId);
-      }
-    } catch {
-      // Agent not found on-chain
-    }
-  }
-  
-  // Fallback to known agents
+  // Check known agents first
   if (KNOWN_AGENTS[normalized]) {
     return KNOWN_AGENTS[normalized];
   }
   
+  // Could scan registry here but that's expensive
+  // For now, return null if not in known list
   return null;
-}
-
-/**
- * Get agent metadata from ERC-8004 registry
- */
-async function getAgentMetadata(agentId) {
-  if (!identityContract) {
-    init();
-  }
-  if (!identityContract) return null;
-  
-  try {
-    const uri = await identityContract.getAgentURI(agentId);
-    
-    // Fetch metadata if it's a valid URL
-    if (uri.startsWith('http') || uri.startsWith('ipfs://')) {
-      const metadataUrl = uri.startsWith('ipfs://') 
-        ? `https://ipfs.io/ipfs/${uri.slice(7)}`
-        : uri;
-      
-      const response = await fetch(metadataUrl);
-      if (response.ok) {
-        return await response.json();
-      }
-    }
-    
-    return { uri };
-  } catch (err) {
-    console.error(`[REPUTATION] Failed to get metadata for agent ${agentId}:`, err.message);
-    return null;
-  }
-}
-
-/**
- * Validate that a wallet can claim bounties (has ERC-8004 identity)
- */
-async function validateBountyClaim(claimerAddress) {
-  const agentId = await getAgentId(claimerAddress);
-  
-  if (!agentId) {
-    return {
-      valid: false,
-      agentId: null,
-      reason: 'No ERC-8004 agent identity found. Register at https://erc8004.org first.',
-    };
-  }
-  
-  return {
-    valid: true,
-    agentId,
-  };
 }
 
 /**
@@ -177,8 +107,8 @@ function registerAgent(walletAddress, agentId) {
  * @param {string} endpoint - Optional endpoint reference
  */
 async function postBountyReputation(walletAddress, value = 100, tag1 = 'bounty-completed', tag2 = '', endpoint = '') {
-  if (!init()) {
-    console.log('[REPUTATION] Skipping - not initialized');
+  if (!initWriteContracts()) {
+    console.log('[REPUTATION] Skipping - not initialized for writing');
     return { success: false, reason: 'not-initialized' };
   }
   
@@ -234,7 +164,7 @@ async function postBountyReputation(walletAddress, value = 100, tag1 = 'bounty-c
  * Post reputation for commitment pool resolution
  */
 async function postCommitmentReputation(agentId, resolved, tag2 = '') {
-  if (!init()) {
+  if (!initWriteContracts()) {
     return { success: false, reason: 'not-initialized' };
   }
   
@@ -273,7 +203,7 @@ async function postCommitmentReputation(agentId, resolved, tag2 = '') {
  * Post reputation for validator voting
  */
 async function postValidatorReputation(validatorAgentId) {
-  if (!init()) {
+  if (!initWriteContracts()) {
     return { success: false, reason: 'not-initialized' };
   }
   
@@ -298,15 +228,58 @@ async function postValidatorReputation(validatorAgentId) {
   }
 }
 
+/**
+ * Verify ERC-8004 agent identity by checking if wallet owns an agent NFT
+ * @param {string} walletAddress - The wallet address to check
+ * @returns {Promise<{hasIdentity: boolean, agentId?: number, error?: string}>}
+ */
+async function verifyAgentIdentity(walletAddress) {
+  if (!initReadContracts()) {
+    return { hasIdentity: false, error: 'not-initialized' };
+  }
+  
+  const normalized = walletAddress.toLowerCase();
+  
+  // First check known agents for quick lookup
+  if (KNOWN_AGENTS[normalized]) {
+    return { hasIdentity: true, agentId: KNOWN_AGENTS[normalized] };
+  }
+  
+  try {
+    // Get total supply to know the range of agent IDs to check
+    const totalSupply = await identityContract.totalSupply();
+    console.log(`[IDENTITY] Checking ${totalSupply} agents for wallet ${walletAddress}`);
+    
+    // Check ownership of each agent NFT (this is expensive but necessary)
+    for (let tokenId = 1; tokenId <= totalSupply; tokenId++) {
+      try {
+        const owner = await identityContract.ownerOf(tokenId);
+        if (owner.toLowerCase() === normalized) {
+          // Cache this mapping for future use
+          KNOWN_AGENTS[normalized] = tokenId;
+          console.log(`[IDENTITY] Found agent ${tokenId} owned by ${walletAddress}`);
+          return { hasIdentity: true, agentId: tokenId };
+        }
+      } catch (err) {
+        // Token might not exist or other error, continue
+        continue;
+      }
+    }
+    
+    console.log(`[IDENTITY] No agent identity found for wallet ${walletAddress}`);
+    return { hasIdentity: false };
+  } catch (err) {
+    console.error(`[IDENTITY] Error verifying identity for ${walletAddress}:`, err.message);
+    return { hasIdentity: false, error: err.message };
+  }
+}
+
 module.exports = {
-  init,
-  hasAgentIdentity,
   getAgentId,
-  getAgentMetadata,
-  validateBountyClaim,
   registerAgent,
   postBountyReputation,
   postCommitmentReputation,
   postValidatorReputation,
+  verifyAgentIdentity,
   KNOWN_AGENTS
 };
