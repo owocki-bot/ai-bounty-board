@@ -97,7 +97,8 @@ app.get('/browse', async (req, res) => {
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
       '<h3 class="bounty-title">' + esc(b.title) + '</h3>' +
-      '<p class="bounty-desc">' + esc(b.description) + '</p>' +
+      '<p class="bounty-desc' + (b.description && b.description.length > 150 ? ' truncated' : '') + '">' + esc(b.description) + '</p>' +
+      (b.description && b.description.length > 150 ? '<button class="read-more-btn" data-full-desc="' + escH(b.description) + '">📖 Read more</button>' : '') +
       '<div class="bounty-tags">' + tagsHtml + '</div>' +
       '<div class="bounty-meta">' +
       '<div class="meta-item"><span class="meta-label">Creator</span><span class="meta-value">' + (b.creator || '').slice(0,6) + '...' + (b.creator || '').slice(-4) + '</span></div>' +
@@ -229,6 +230,10 @@ app.get('/browse', async (req, res) => {
     '.reward { font-size: 1.1rem; font-weight: bold; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\n' +
     '.bounty-title { font-size: 1.2rem; margin-bottom: 0.75rem; color: #fff; }\n' +
     '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 1rem; }\n' +
+    '.bounty-desc.truncated { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\n' +
+    '.read-more-btn { background: none; border: none; color: #00d4ff; cursor: pointer; font-size: 0.85rem; padding: 0; margin-top: 0.5rem; }\n' +
+    '.read-more-btn:hover { text-decoration: underline; }\n' +
+    '.bounty-detail-modal .modal-desc { white-space: pre-wrap; color: #e5e5e5; line-height: 1.7; }\n' +
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
     '.tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }\n' +
@@ -604,6 +609,7 @@ app.get('/browse', async (req, res) => {
     '  else if (t.classList.contains("btn-copy")) { e.preventDefault(); copyBountyId(t.dataset.bountyId); }\n' +
     '  else if (t.classList.contains("btn-edit")) { e.preventDefault(); openEditModal(t.dataset.bountyId, t.dataset.subId); }\n' +
     '  else if (t.classList.contains("btn-del")) { e.preventDefault(); deleteSubmission(t.dataset.bountyId, t.dataset.subId); }\n' +
+  '  else if (t.classList.contains("read-more-btn")) { e.preventDefault(); openModal(\'<div class="bounty-detail-modal"><h3>📖 Full Description</h3><div class="modal-desc">\' + t.dataset.fullDesc + \'</div></div>\'); }\n' +
     '});\n' +
     'document.getElementById("manual-address").addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); setManualAddress(); } });\n' +
     'if (window.ethereum) { window.ethereum.on("accountsChanged", function(a) { if (a[0] && walletSource === "metamask") { userAddress = a[0].toLowerCase(); localStorage.setItem("bb_address", userAddress); showConnected(userAddress); } }); }\n' +
