@@ -259,8 +259,7 @@ async function supabaseRequest(table, method = 'GET', options = {}) {
   });
   
   if (!response.ok) {
-    const error = await response.text();
-    console.error(`[DB ERROR] ${response.status}: ${error}`);
+    console.error(`[DB ERROR] ${response.status}`);
     return null;
   }
   if (method === 'DELETE') return true;
@@ -542,10 +541,9 @@ function requirePayment(amount, description) {
       req.payer = payment.payer;
       next();
     } catch (error) {
-      return res.status(402).json({
-        error: 'Payment verification failed',
-        message: error.message
-      });
+ return res.status(402).json({
+    error: 'Payment verification failed'
+  });
     }
   };
 }
@@ -1191,8 +1189,7 @@ app.post('/bounties', async (req, res) => {
     req.payer = payment.payer;
   } catch (error) {
     return res.status(402).json({
-      error: 'Payment verification failed',
-      message: error.message
+      error: 'Payment verification failed'
     });
   }
   

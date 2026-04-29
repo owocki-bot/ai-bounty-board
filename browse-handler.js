@@ -614,8 +614,68 @@ app.get('/browse', async (req, res) => {
   );
   } catch (err) {
     console.error('[BROWSE] Error:', err);
-    // Fail open: redirect to home instead of hard 500
-    return res.redirect('/');
+    // Fail open: show user-friendly error instead of redirecting to home
+    return res.status(500).send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>Error - AI Bounty Board</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+          body { 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; 
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%); 
+            color: #e4e4e4; 
+            min-height: 100vh; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            margin: 0; 
+          }
+          .error-container {
+            text-align: center;
+            padding: 2rem;
+            max-width: 600px;
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.1);
+          }
+          .error-title {
+            color: #ef4444;
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+          }
+          .error-message {
+            color: #aaa;
+            margin-bottom: 1.5rem;
+            line-height: 1.6;
+          }
+          .retry-btn {
+            background: linear-gradient(90deg, #00d4ff, #7b2cbf);
+            color: #fff;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+          }
+          .retry-btn:hover {
+            opacity: 0.9;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="error-container">
+          <h1 class="error-title">⚠️ Error Loading Bounties</h1>
+          <p class="error-message">There was an issue loading the bounty data. This may be a temporary problem.</p>
+          <a href="/browse" class="retry-btn">Try Again</a>
+        </div>
+      </body>
+      </html>
+    `);
   }
 });
 
@@ -699,7 +759,7 @@ app.get('/bounty/:id', async (req, res) => {
 </html>`);
   } catch (err) {
     console.error('[BOUNTY DETAIL] Error:', err);
-    res.status(500).send('Error: ' + err.message);
+    res.status(500).send('Error: An internal server error occurred. Please try again later.');
   }
 });
 
