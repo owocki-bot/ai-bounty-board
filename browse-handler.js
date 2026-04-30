@@ -10,7 +10,21 @@ app.get('/browse', async (req, res) => {
   const perPage = 15; // Limit to 15 bounties per page for faster loading
   const pageNum = Math.max(1, parseInt(page) || 1);
   
-  let allBounties = await getAllBounties();
+  // Add timeout for bounty data loading
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+  
+  let allBounties;
+  try {
+    allBounties = await getAllBounties();
+  } catch (error) {
+    console.error('[BROWSE] Error loading bounties:', error);
+    // Continue with empty bounties to show fallback UI
+    allBounties = [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
 
   // Filter out corrupted bounties (no title)
@@ -295,7 +309,7 @@ app.get('/browse', async (req, res) => {
     '.page-info { color: #888; font-size: 0.9rem; }\n' +
     '@media (max-width: 480px) { .bounties-grid { grid-template-columns: 1fr; } .navbar { padding: 1rem; } .container { padding: 1rem; } .wallet-bar { flex-direction: column; align-items: stretch; } .wallet-bar input[type="text"] { width: 100%; } }\n' +
     '</style>\n</head>\n<body>\n' +
-    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
+    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/profile">My Profile</a><a href="/social-contract">Social Contract</a><a href="/activity">Activity</a><a href="/stats">Stats</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
     '<div class="container">\n' +
     '<!-- Wallet Bar -->\n' +
     '<div class="wallet-bar" id="wallet-bar">\n' +
