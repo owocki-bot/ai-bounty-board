@@ -243,48 +243,83 @@ async function supabaseRequest(table, method = 'GET', options = {}) {
     console.log('[DB] Supabase not configured, using memory fallback');
     return null;
   }
-  const { body, query } = options;
+  const { body, query, signal } = options;
   let url = `${SUPABASE_URL}/rest/v1/${table}`;
   if (query) url += `?${query}`;
   
-  const response = await fetch(url, {
-    method,
-    headers: {
-      'apikey': SUPABASE_KEY,
-      'Authorization': `Bearer ${SUPABASE_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'return=representation'
-    },
-    body: body ? JSON.stringify(body) : undefined
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
   
-  if (!response.ok) {
-    const error = await response.text();
-    console.error(`[DB ERROR] ${response.status}: ${error}`);
+  try {
+    const response = await fetch(url, {
+      method,
+      signal: controller.signal,
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=representation'
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    
+    clearTimeout(timeout);
+    
+    if (!response.ok) {
+      const error = await response.text();
+      console.error(`[DB ERROR] ${response.status}: ${error}`);
+      return null;
+    }
+    if (method === 'DELETE') return true;
+    return response.json();
+  } catch (error) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      console.error(`[DB TIMEOUT] Supabase request to ${table} timed out`);
+    } else {
+      console.error(`[DB ERROR] Supabase request to ${table} failed:`, error);
+    }
     return null;
   }
-  if (method === 'DELETE') return true;
-  return response.json();
 }
 
 // ============ BOUNTY DATABASE OPERATIONS ============
 async function getAllBounties() {
-  const result = await supabaseRequest('bounties', 'GET');
-  if (!result) return Array.from(bountiesMemory.values()).map(b => {
-    if (!Array.isArray(b.requirements)) {
-      if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
-      else b.requirements = [];
+  // Add timeout to prevent hanging on Supabase failures
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  
+  try {
+    const result = await supabaseRequest('bounties', 'GET', { signal: controller.signal });
+    clearTimeout(timeout);
+    
+    if (!result) {
+      return Array.from(bountiesMemory.values()).map(b => {
+        if (!Array.isArray(b.requirements)) {
+          if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
+          else b.requirements = [];
+        }
+        return b;
+      });
     }
-    return b;
-  });
-  return result.map(row => {
-    const data = { ...row.data };
-    if (!Array.isArray(data.requirements)) {
-      if (typeof data.requirements === 'string' && data.requirements.trim()) data.requirements = [data.requirements];
-      else data.requirements = [];
-    }
-    return { id: row.id.toString(), ...data };
-  });
+    return result.map(b => {
+      if (!Array.isArray(b.requirements)) {
+        if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
+        else b.requirements = [];
+      }
+      return b;
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    console.error('[DB] getAllBounties failed:', error);
+    return Array.from(bountiesMemory.values()).map(b => {
+      if (!Array.isArray(b.requirements)) {
+        if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
+        else b.requirements = [];
+      }
+      return b;
+    });
+  }
 }
 
 async function getBounty(id) {
@@ -838,6 +873,10 @@ app.get('/mod', async (req, res) => {
       min-height: 100vh;
       padding: 2rem;
     }
+    .navbar { background: rgba(0,0,0,0.3); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap; gap: 0.5rem; }
+    .navbar h1 { font-size: 1.5rem; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .nav-links a { color: #00d4ff; text-decoration: none; margin-left: 1.5rem; }
+    .nav-links a:hover { text-decoration: underline; }
     .container { max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.8rem; margin-bottom: 0.5rem; }
     h1 span { color: #00d4ff; }
@@ -906,6 +945,7 @@ app.get('/mod', async (req, res) => {
   </style>
 </head>
 <body>
+  <nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="/activity">Activity</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>
   <div class="container">
     <h1>🛡️ <span>Mod</span> Dashboard</h1>
     <p class="subtitle">Review and approve bounty submissions</p>
@@ -2390,6 +2430,66 @@ app.get('/.well-known/x402', (req, res) => {
 
 // 1-click claim UI handler (loaded from browse-handler.js)
 require("./browse-handler")(app, getAllBounties);
+
+// Serve guide pages
+app.get('/guides/:guide', (req, res) => {
+  const guide = req.params.guide;
+  const validGuides = ['getting-started.html', 'agent-api.html', 'commitment-pools.html', 'reputation.html'];
+  
+  if (!validGuides.includes(guide)) {
+    return res.status(404).send('<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+      '<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+      '<title>Guide Not Found | AI Bounty Board</title>\n' +
+      '<style>' +
+      'body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 2rem; text-align: center; }' +
+      '.error { background: #1a1a1a; border-radius: 12px; padding: 2rem; border: 1px solid #333; max-width: 600px; margin: 2rem auto; }' +
+      '.error h1 { color: #ef4444; margin-bottom: 1rem; }' +
+      '.error p { margin-bottom: 1.5rem; }' +
+      '.btn { background: #333; color: #fff; padding: 0.75rem 1.5rem; border-radius: 8px; text-decoration: none; display: inline-block; margin-top: 1rem; }' +
+      '.btn-primary { background: linear-gradient(90deg, #00d4ff, #7b2cbf); }' +
+      '</style>\n</head>\n<body>\n' +
+      '<div class="error">\n' +
+      '<h1>📄 Guide Not Found</h1>\n' +
+      '<p>The requested guide could not be found.</p>\n' +
+      '<div style="margin-top: 1.5rem;">\n' +
+      '<a href="/browse" class="btn btn-primary">Browse Bounties</a>\n' +
+      '<a href="/" class="btn" style="margin-left: 0.5rem;">🏠 Home</a>\n' +
+      '</div>\n' +
+      '</div>\n' +
+      '</body>\n</html>');
+  }
+  
+  // Read guide content from file system
+  const fs = require('fs');
+  const path = require('path');
+  const guidePath = path.join(__dirname, 'guides', guide);
+  
+  if (!fs.existsSync(guidePath)) {
+    return res.status(404).send('<!DOCTYPE html>\n<html lang="en">\n<head>\n' +
+      '<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+      '<title>Guide Not Found | AI Bounty Board</title>\n' +
+      '<style>' +
+      'body { font-family: system-ui, -apple-system, sans-serif; background: #0a0a0a; color: #e5e5e5; padding: 2rem; text-align: center; }' +
+      '.error { background: #1a1a1a; border-radius: 12px; padding: 2rem; border: 1px solid #333; max-width: 600px; margin: 2rem auto; }' +
+      '.error h1 { color: #ef4444; margin-bottom: 1rem; }' +
+      '.error p { margin-bottom: 1.5rem; }' +
+      '.btn { background: #333; color: #fff; padding: 0.75rem 1.5rem; border-radius: 8px; text-decoration: none; display: inline-block; margin-top: 1rem; }' +
+      '.btn-primary { background: linear-gradient(90deg, #00d4ff, #7b2cbf); }' +
+      '</style>\n</head>\n<body>\n' +
+      '<div class="error">\n' +
+      '<h1>📄 Guide Not Found</h1>\n' +
+      '<p>The requested guide could not be found.</p>\n' +
+      '<div style="margin-top: 1.5rem;">\n' +
+      '<a href="/browse" class="btn btn-primary">Browse Bounties</a>\n' +
+      '<a href="/" class="btn" style="margin-left: 0.5rem;">🏠 Home</a>\n' +
+      '</div>\n' +
+      '</div>\n' +
+      '</body>\n</html>');
+  }
+  
+  const content = fs.readFileSync(guidePath, 'utf8');
+  res.send(content);
+});
 
 
 /**
