@@ -1121,7 +1121,7 @@ app.get('/mod/pending', async (req, res) => {
  * POST /bounties
  */
 app.post('/bounties', async (req, res) => {
-  const { title, description, reward, tags, deadline, requirements } = req.body;
+  const { title, description, reward, tags, deadline, requirements, creator } = req.body;
   
   if (!title || !description || !reward) {
     return res.status(400).json({ error: 'title, description, and reward required' });
