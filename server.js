@@ -2395,6 +2395,17 @@ app.get('/.well-known/x402', (req, res) => {
 
 
 // 1-click claim UI handler (loaded from browse-handler.js)
+// Redirect missing guide pages to guidelines (Issue #9 Bug 3)
+app.get('/guides/:page?', (req, res) => {
+  console.log('[REDIRECT] /guides/' + (req.params.page || '') + ' -> /guidelines');
+  res.redirect(301, '/guidelines');
+});
+
+// Redirect /social-contract to /guidelines for consistency (Issue #9 Bug 2)
+app.get('/social-contract', (req, res) => {
+  res.redirect(301, '/guidelines');
+});
+
 require("./browse-handler")(app, getAllBounties);
 
 
