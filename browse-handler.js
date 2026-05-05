@@ -97,7 +97,8 @@ app.get('/browse', async (req, res) => {
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
       '<h3 class="bounty-title">' + esc(b.title) + '</h3>' +
-      '<p class="bounty-desc">' + esc(b.description) + '</p>' +
+      '<div class="bounty-desc-wrap"><p class="bounty-desc bounty-desc-clamped">' + esc(b.description) + '</p>' +
+      (b.description && b.description.length > 150 ? '<button class="btn-read-more" onclick="this.previousElementSibling.classList.toggle(\'bounty-desc-clamped\');this.textContent=this.previousElementSibling.classList.contains(\'bounty-desc-clamped\')?\'▼ Read more\':\'▲ Show less\';">▼ Read more</button>' : '') + '</div>' +
       '<div class="bounty-tags">' + tagsHtml + '</div>' +
       '<div class="bounty-meta">' +
       '<div class="meta-item"><span class="meta-label">Creator</span><span class="meta-value">' + (b.creator || '').slice(0,6) + '...' + (b.creator || '').slice(-4) + '</span></div>' +
@@ -228,7 +229,11 @@ app.get('/browse', async (req, res) => {
     '.status-badge { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }\n' +
     '.reward { font-size: 1.1rem; font-weight: bold; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\n' +
     '.bounty-title { font-size: 1.2rem; margin-bottom: 0.75rem; color: #fff; }\n' +
-    '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 1rem; }\n' +
+    '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 0.5rem; white-space: pre-wrap; word-break: break-word; }\n' +
+    '.bounty-desc-clamped { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }\n' +
+    '.bounty-desc-wrap { margin-bottom: 1rem; }\n' +
+    '.btn-read-more { background: none; border: none; color: #00d4ff; cursor: pointer; font-size: 0.8rem; padding: 0.25rem 0; transition: opacity 0.2s; }\n' +
+    '.btn-read-more:hover { opacity: 0.7; }\n' +
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
     '.tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }\n' +
