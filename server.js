@@ -1121,11 +1121,20 @@ app.get('/mod/pending', async (req, res) => {
  * POST /bounties
  */
 app.post('/bounties', async (req, res) => {
-  const { title, description, reward, tags, deadline, requirements } = req.body;
-  
-  if (!title || !description || !reward) {
-    return res.status(400).json({ error: 'title, description, and reward required' });
-  }
+  const { title, description, reward, tags, deadline, requirements, creator_address } = req.body;
+
+  if (!creator_address || !creator_address.trim()) {
+  return res.status(400).json({ 
+    error: 'creator_address is required',
+    message: 'Please provide your Ethereum wallet address to post a bounty.'
+  });
+}
+if (!/^0x[a-fA-F0-9]{40}$/.test(creator_address.trim())) {
+  return res.status(400).json({ 
+    error: 'Invalid Ethereum wallet address',
+    message: 'creator_address must be a valid Ethereum address (0x followed by 40 hex characters).'
+  });
+}
   
   // SECURITY PAUSE: Only admin wallet can create bounties during security audit
   const ADMIN_WALLET = '0xccD7200024A8B5708d381168ec2dB0DC587af83F';
