@@ -1237,6 +1237,9 @@ if (!/^0x[a-fA-F0-9]{40}$/.test(creator_address.trim())) {
     reward: reward.toString(), // USDC amount in smallest units
     rewardFormatted: (parseInt(reward) / 1e6).toFixed(2) + ' USDC',
     tags: tags || [],
+        creator: req.payer,
+    creator_address: creator_address.trim().toLowerCase(),  ← 新加这行
+    status: 'open',
     deadline: deadline || Date.now() + 7 * 24 * 60 * 60 * 1000, // Default 7 days
     requirements: requirements || [],
     creator: req.payer,
