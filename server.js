@@ -2449,19 +2449,34 @@ app.get('/', async (req, res) => {
     totalAgents: agents.size
   };
 
+  function escHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   const bountyList = validBounties
     .filter(b => b.status === 'open')
     .slice(0, 10)
-    .map(b => `
+    .map(b => {
+      const detailUrl = `/bounty/${encodeURIComponent(String(b.id))}`;
+      const description = b.description || '';
+      const shortDescription = description.slice(0, 150);
+      return `
       <div class="bounty">
-        <h3>${b.title || 'Untitled'}</h3>
-        <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
+        <h3><a href="${detailUrl}">${escHtml(b.title || 'Untitled')}</a></h3>
+        <p>${escHtml(shortDescription)}${description.length > 150 ? '...' : ''}</p>
         <div class="meta">
-          <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
-          <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
+          <span class="reward">💰 ${escHtml(b.rewardFormatted || '0 USDC')}</span>
+          <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${escHtml(t)}</span>`).join(' ')}</span>
         </div>
+        <a href="${detailUrl}" class="details-link">Read full details →</a>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
   res.send(`
 <!DOCTYPE html>
@@ -2526,6 +2541,8 @@ app.get('/', async (req, res) => {
       border-color: #00d4ff;
     }
     .bounty h3 { color: #fff; margin-bottom: 0.5rem; }
+    .bounty h3 a { color: inherit; text-decoration: none; }
+    .bounty h3 a:hover { color: #00d4ff; text-decoration: underline; }
     .bounty p { color: #aaa; font-size: 0.95rem; line-height: 1.5; }
     .meta { margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap; align-items: center; }
     .reward {
@@ -2542,6 +2559,15 @@ app.get('/', async (req, res) => {
       font-size: 0.8rem;
       color: #888;
     }
+    .details-link {
+      display: inline-block;
+      margin-top: 1rem;
+      color: #00d4ff;
+      font-size: 0.9rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .details-link:hover { text-decoration: underline; }
     .api-info {
       margin-top: 3rem;
       background: rgba(0,0,0,0.3);
