@@ -56,6 +56,7 @@ app.get('/browse', async (req, res) => {
 
   const bountyCards = paginatedBounties.map(b => {
     const subs = (b.submissions || []);
+    const detailUrl = '/bounty/' + encodeURIComponent(String(b.id));
     const tagsHtml = (b.tags || []).map(t => '<a href="/browse?tag=' + t + '" class="tag">#' + esc(t) + '</a>').join(' ');
     const reqList = Array.isArray(b.requirements) ? b.requirements : [];
     const reqsHtml = (reqList.length > 0)
@@ -89,6 +90,7 @@ app.get('/browse', async (req, res) => {
       const label = b.status === 'claimed' ? '📤 Submit Proof' : '📤 Add Submission';
       actionBtns += '<button class="btn btn-submit-proof" data-bounty-id="' + b.id + '">' + label + '</button>';
     }
+    actionBtns += '<a href="' + detailUrl + '" class="btn btn-secondary">Read Full Details</a>';
     actionBtns += '<button class="btn btn-secondary btn-copy" data-bounty-id="' + b.id + '">📋 ID</button>';
     actionBtns += '<a href="/bounties/' + b.id + '" class="btn btn-secondary">JSON</a>';
 
@@ -96,7 +98,7 @@ app.get('/browse', async (req, res) => {
       '<div class="bounty-header">' +
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
-      '<h3 class="bounty-title">' + esc(b.title) + '</h3>' +
+      '<h3 class="bounty-title"><a href="' + detailUrl + '">' + esc(b.title) + '</a></h3>' +
       '<p class="bounty-desc">' + esc(b.description) + '</p>' +
       '<div class="bounty-tags">' + tagsHtml + '</div>' +
       '<div class="bounty-meta">' +
@@ -228,6 +230,8 @@ app.get('/browse', async (req, res) => {
     '.status-badge { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }\n' +
     '.reward { font-size: 1.1rem; font-weight: bold; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\n' +
     '.bounty-title { font-size: 1.2rem; margin-bottom: 0.75rem; color: #fff; }\n' +
+    '.bounty-title a { color: inherit; text-decoration: none; }\n' +
+    '.bounty-title a:hover { color: #00d4ff; text-decoration: underline; }\n' +
     '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 1rem; }\n' +
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
