@@ -23,7 +23,21 @@ const MOD_WALLETS = [
 ];
 
 function isMod(address) {
-  return MOD_WALLETS.includes(address?.toLowerCase());
+  if (typeof address !== 'string' || !ethers.isAddress(address)) {
+    return false;
+  }
+  return MOD_WALLETS.includes(address.toLowerCase());
+}
+
+function normalizeWalletAddress(address) {
+  if (typeof address !== 'string' || !ethers.isAddress(address)) {
+    return null;
+  }
+  return address.toLowerCase();
+}
+
+function rejectInvalidWallet(res, field = 'address') {
+  return res.status(400).json({ error: `valid ${field} required` });
 }
 
 // ============ AUTOGRADER ============
@@ -526,7 +540,8 @@ function requirePayment(amount, description) {
       const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
       
       // Basic validation
-      if (!payment.signature || !payment.payer) {
+      const normalizedPayer = normalizeWalletAddress(payment.payer);
+      if (!payment.signature || !normalizedPayer) {
         throw new Error('Invalid payment payload');
       }
 
@@ -534,12 +549,12 @@ function requirePayment(amount, description) {
       const message = `x402:${payment.recipient}:${payment.amount}:${payment.nonce}`;
       const recoveredAddress = ethers.verifyMessage(message, payment.signature);
       
-      if (recoveredAddress.toLowerCase() !== payment.payer.toLowerCase()) {
+      if (recoveredAddress.toLowerCase() !== normalizedPayer) {
         throw new Error('Invalid signature');
       }
 
       req.payment = payment;
-      req.payer = payment.payer;
+      req.payer = normalizedPayer;
       next();
     } catch (error) {
       return res.status(402).json({
@@ -556,14 +571,18 @@ function requirePayment(amount, description) {
  */
 app.post('/agents', (req, res) => {
   const { address, name, capabilities, endpoint, webhookUrl } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   
   if (!address || !name) {
     return res.status(400).json({ error: 'address and name required' });
   }
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
 
   const agent = {
     id: uuidv4(),
-    address: address.toLowerCase(),
+    address: normalizedAddress,
     name,
     capabilities: capabilities || [],
     endpoint: endpoint || null, // Webhook for notifications
@@ -690,7 +709,12 @@ app.get('/discover', async (req, res) => {
  * GET /agents/:address
  */
 app.get('/agents/:address', (req, res) => {
-  const agent = agents.get(req.params.address.toLowerCase());
+  const normalizedAddress = normalizeWalletAddress(req.params.address);
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
+
+  const agent = agents.get(normalizedAddress);
   if (!agent) {
     return res.status(404).json({ error: 'Agent not found' });
   }
@@ -1134,7 +1158,7 @@ app.post('/bounties', async (req, res) => {
   if (paymentHeader) {
     try {
       const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
-      const payerWallet = payment.payer?.toLowerCase();
+      const payerWallet = normalizeWalletAddress(payment.payer);
       
       if (payerWallet !== ADMIN_WALLET.toLowerCase()) {
         console.log(`[BOUNTY CREATION BLOCKED] Non-admin wallet ${payment.payer} attempted to create bounty during security pause`);
@@ -1177,18 +1201,19 @@ app.post('/bounties', async (req, res) => {
   // Verify payment
   try {
     const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
-    if (!payment.signature || !payment.payer) {
+    const normalizedPayer = normalizeWalletAddress(payment.payer);
+    if (!payment.signature || !normalizedPayer) {
       throw new Error('Invalid payment payload');
     }
     const message = `x402:${payment.recipient}:${payment.amount}:${payment.nonce}`;
     const recoveredAddress = ethers.verifyMessage(message, payment.signature);
-    if (recoveredAddress.toLowerCase() !== payment.payer.toLowerCase()) {
+    if (recoveredAddress.toLowerCase() !== normalizedPayer) {
       throw new Error('Invalid signature');
     }
     if (BigInt(payment.amount) < totalRequired) {
       throw new Error(`Insufficient payment: sent ${payment.amount}, need ${totalRequired}`);
     }
-    req.payer = payment.payer;
+    req.payer = normalizedPayer;
   } catch (error) {
     return res.status(402).json({
       error: 'Payment verification failed',
@@ -1282,20 +1307,24 @@ async function isBlocklisted(address) {
  */
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address, agentId } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   
   if (!address) {
     return res.status(400).json({ error: 'address required' });
   }
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
   
   // Register ERC-8004 agent ID if provided
   if (agentId && Number.isInteger(Number(agentId))) {
-    reputation.registerAgent(address, Number(agentId));
+    reputation.registerAgent(normalizedAddress, Number(agentId));
   }
   
   // Rate limit check
-  const rateCheck = checkRateLimit(address, 'claim');
+  const rateCheck = checkRateLimit(normalizedAddress, 'claim');
   if (!rateCheck.allowed) {
-    console.log(`[RATE LIMITED] ${address} hit claim rate limit`);
+    console.log(`[RATE LIMITED] ${normalizedAddress} hit claim rate limit`);
     return res.status(429).json({ 
       error: 'Too many claims. Please wait before trying again.',
       retryAfter: rateCheck.retryAfter
@@ -1303,8 +1332,8 @@ app.post('/bounties/:id/claim', async (req, res) => {
   }
   
   // Check blocklist
-  if (await isBlocklisted(address)) {
-    console.log(`[BLOCKED] ${address} attempted to claim bounty but is blocklisted`);
+  if (await isBlocklisted(normalizedAddress)) {
+    console.log(`[BLOCKED] ${normalizedAddress} attempted to claim bounty but is blocklisted`);
     return res.status(403).json({ error: 'This wallet has been blocklisted for abuse' });
   }
   
@@ -1312,11 +1341,11 @@ app.post('/bounties/:id/claim', async (req, res) => {
   // Only counts 'claimed' status — once submitted, slot frees up for new claims
   const allBounties = await getAllBounties();
   const pendingClaims = allBounties.filter(b => 
-    b.claimedBy?.toLowerCase() === address.toLowerCase() && 
+    b.claimedBy?.toLowerCase() === normalizedAddress &&
     b.status === 'claimed'  // ONLY claimed, NOT submitted
   );
   if (pendingClaims.length >= MAX_PENDING_CLAIMS) {
-    console.log(`[PENDING LIMIT] ${address} has ${pendingClaims.length} pending claims (max ${MAX_PENDING_CLAIMS})`);
+    console.log(`[PENDING LIMIT] ${normalizedAddress} has ${pendingClaims.length} pending claims (max ${MAX_PENDING_CLAIMS})`);
     return res.status(429).json({ 
       error: `You have ${pendingClaims.length} bounties claimed but not submitted. Submit your work before claiming more.`,
       maxPending: MAX_PENDING_CLAIMS,
@@ -1331,19 +1360,19 @@ app.post('/bounties/:id/claim', async (req, res) => {
   }
   
   // ANTI-GAMING: Prevent self-dealing (creator cannot claim own bounty)
-  if (bounty.creator && bounty.creator.toLowerCase() === address.toLowerCase()) {
-    console.log(`[SELF-DEAL BLOCKED] ${address} tried to claim own bounty ${req.params.id}`);
+  if (bounty.creator && bounty.creator.toLowerCase() === normalizedAddress) {
+    console.log(`[SELF-DEAL BLOCKED] ${normalizedAddress} tried to claim own bounty ${req.params.id}`);
     return res.status(403).json({ error: 'Cannot claim your own bounty' });
   }
   
   // Use atomic claim to prevent race conditions
-  const claimed = await atomicClaim(req.params.id, address);
+  const claimed = await atomicClaim(req.params.id, normalizedAddress);
   
   if (!claimed) {
     // Atomic claim failed - bounty was already claimed or status changed
     const current = await getBounty(req.params.id);
     if (current?.status === 'claimed') {
-      console.log(`[CLAIM RACE] ${address} lost race for bounty ${req.params.id} to ${current.claimedBy}`);
+      console.log(`[CLAIM RACE] ${normalizedAddress} lost race for bounty ${req.params.id} to ${current.claimedBy}`);
       return res.status(409).json({ 
         error: 'Bounty was just claimed by another user',
         claimedBy: current.claimedBy,
@@ -1353,7 +1382,7 @@ app.post('/bounties/:id/claim', async (req, res) => {
     return res.status(400).json({ error: 'Bounty is not open for claims' });
   }
   
-  console.log(`[BOUNTY CLAIMED] ${req.params.id} claimed by ${address} (atomic)`);
+  console.log(`[BOUNTY CLAIMED] ${req.params.id} claimed by ${normalizedAddress} (atomic)`);
   res.json(claimed);
 });
 
@@ -1363,25 +1392,29 @@ app.post('/bounties/:id/claim', async (req, res) => {
  */
 app.post('/bounties/:id/submit', async (req, res) => {
   const { address, submission, proof } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   
   if (!address) {
     return res.status(400).json({ error: 'address required' });
   }
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
   
   // ANTI-GAMING: Check blocklist FIRST (before any processing)
   const blocklist = await getBlocklist();
-  if (blocklist.wallets.includes(address.toLowerCase())) {
-    console.log(`[BLOCKLISTED SUBMIT REJECTED] ${address} tried to submit bounty ${req.params.id}`);
+  if (blocklist.wallets.includes(normalizedAddress)) {
+    console.log(`[BLOCKLISTED SUBMIT REJECTED] ${normalizedAddress} tried to submit bounty ${req.params.id}`);
     
     // Release the bounty immediately (reset to open)
     const bounty = await getBounty(req.params.id);
-    if (bounty && bounty.claimedBy === address.toLowerCase()) {
+    if (bounty && bounty.claimedBy === normalizedAddress) {
       bounty.status = 'open';
       bounty.claimedBy = null;
       bounty.claimedAt = null;
       bounty.updatedAt = Date.now();
       await updateBounty(bounty.id, bounty);
-      console.log(`[BOUNTY RELEASED] ${req.params.id} released from blocklisted wallet ${address}`);
+      console.log(`[BOUNTY RELEASED] ${req.params.id} released from blocklisted wallet ${normalizedAddress}`);
     }
     
     // Silent rejection - don't reveal blocklist status to attacker
@@ -1391,9 +1424,9 @@ app.post('/bounties/:id/submit', async (req, res) => {
   }
   
   // Rate limit check
-  const rateCheck = checkRateLimit(address, 'submit');
+  const rateCheck = checkRateLimit(normalizedAddress, 'submit');
   if (!rateCheck.allowed) {
-    console.log(`[RATE LIMITED] ${address} hit submit rate limit`);
+    console.log(`[RATE LIMITED] ${normalizedAddress} hit submit rate limit`);
     return res.status(429).json({ 
       error: 'Too many submissions. Please wait before trying again.',
       retryAfter: rateCheck.retryAfter
@@ -1405,7 +1438,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (bounty.claimedBy !== address?.toLowerCase()) {
+  if (bounty.claimedBy !== normalizedAddress) {
     return res.status(403).json({ error: 'Only the claiming agent can submit' });
   }
   if (!submission) {
@@ -1418,7 +1451,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   if (bounty.claimedAt && (Date.now() - bounty.claimedAt) < MIN_WORK_TIME_MS) {
     const workTimeMin = Math.floor((Date.now() - bounty.claimedAt) / 60000);
     const waitMins = Math.ceil((MIN_WORK_TIME_MS - (Date.now() - bounty.claimedAt)) / 60000);
-    console.log(`[FAST SUBMIT BLOCKED] ${address} tried to submit ${req.params.id} after ${workTimeMin} min (min: 10 min)`);
+    console.log(`[FAST SUBMIT BLOCKED] ${normalizedAddress} tried to submit ${req.params.id} after ${workTimeMin} min (min: 10 min)`);
     return res.status(400).json({ 
       error: `Work time too short: ${workTimeMin} minutes. Minimum 10 minutes required to prevent gaming.`,
       hint: `Wait ${waitMins} more minutes before submitting.`
@@ -1428,7 +1461,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   // ANTI-GAMING: Require proof URL for bounties > $30
   const submissionStr = typeof submission === 'string' ? submission : JSON.stringify(submission);
   if (reward > 30 && !proof && !submissionStr.includes('http')) {
-    console.log(`[NO PROOF BLOCKED] ${address} submitted ${req.params.id} without proof URL`);
+    console.log(`[NO PROOF BLOCKED] ${normalizedAddress} submitted ${req.params.id} without proof URL`);
     return res.status(400).json({ 
       error: 'Bounties over $30 require a proof URL (GitHub repo, deployed site, etc.)',
       message: 'Please provide a link to your deployed work, GitHub repo, or other proof of completion.'
@@ -1439,7 +1472,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   if (proof && proof.includes('http')) {
     const verification = await verifyProofUrl(proof);
     if (!verification.valid) {
-      console.log(`[INVALID PROOF URL] ${address} submitted ${req.params.id} with invalid proof: ${verification.message}`);
+      console.log(`[INVALID PROOF URL] ${normalizedAddress} submitted ${req.params.id} with invalid proof: ${verification.message}`);
       return res.status(400).json({
         error: 'Invalid proof URL',
         message: verification.message,
@@ -1452,7 +1485,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   // Payload size check
   const submissionLength = typeof submission === 'string' ? submission.length : JSON.stringify(submission).length;
   if (submissionLength > MAX_SUBMISSION_LENGTH) {
-    console.log(`[BLOCKED] Oversized submission from ${address}: ${submissionLength} bytes`);
+    console.log(`[BLOCKED] Oversized submission from ${normalizedAddress}: ${submissionLength} bytes`);
     return res.status(413).json({ 
       error: 'Submission too large',
       maxLength: MAX_SUBMISSION_LENGTH,
@@ -1467,7 +1500,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   // Only auto-reject obvious garbage (empty or < 20% with no URLs)
   const hasProofUrl = (submission || '').includes('http') || (proof || '').includes('http');
   if (gradeResult.score < 20 && !hasProofUrl) {
-    console.log(`[AUTO-REJECTED] Bounty #${bounty.id} submission from ${address}: Score ${gradeResult.score}% with no proof URL`);
+    console.log(`[AUTO-REJECTED] Bounty #${bounty.id} submission from ${normalizedAddress}: Score ${gradeResult.score}% with no proof URL`);
     return res.status(400).json({
       error: 'Submission appears incomplete. Please include proof of your work (URL, screenshots, etc.)',
       score: gradeResult.score,
@@ -1489,7 +1522,7 @@ app.post('/bounties/:id/submit', async (req, res) => {
   bounty.updatedAt = Date.now();
 
   const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${address} (autograder: ${gradeResult.score}%)`);
+  console.log(`[BOUNTY SUBMITTED] ${bounty.id} work submitted by ${normalizedAddress} (autograder: ${gradeResult.score}%)`);
   
   res.json({ ...updated, autogradeScore: gradeResult.score });
 });
@@ -1500,11 +1533,13 @@ app.post('/bounties/:id/submit', async (req, res) => {
  */
 app.put('/bounties/:id/submissions/:subId', async (req, res) => {
   const { address, submission, proof } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
   if (!address) return res.status(400).json({ error: 'address required' });
-  if (bounty.claimedBy !== address.toLowerCase()) {
+  if (!normalizedAddress) return rejectInvalidWallet(res);
+  if (bounty.claimedBy !== normalizedAddress) {
     return res.status(403).json({ error: 'Only the claimer can edit submissions' });
   }
 
@@ -1517,7 +1552,7 @@ app.put('/bounties/:id/submissions/:subId', async (req, res) => {
   bounty.updatedAt = Date.now();
 
   const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[SUBMISSION EDITED] ${bounty.id}/${req.params.subId} by ${address}`);
+  console.log(`[SUBMISSION EDITED] ${bounty.id}/${req.params.subId} by ${normalizedAddress}`);
   res.json(updated);
 });
 
@@ -1527,11 +1562,13 @@ app.put('/bounties/:id/submissions/:subId', async (req, res) => {
  */
 app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
   const { address } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
   if (!address) return res.status(400).json({ error: 'address required' });
-  if (bounty.claimedBy !== address.toLowerCase()) {
+  if (!normalizedAddress) return rejectInvalidWallet(res);
+  if (bounty.claimedBy !== normalizedAddress) {
     return res.status(403).json({ error: 'Only the claimer can delete submissions' });
   }
 
@@ -1547,7 +1584,7 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
 
   bounty.updatedAt = Date.now();
   const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[SUBMISSION DELETED] ${bounty.id}/${req.params.subId} by ${address}`);
+  console.log(`[SUBMISSION DELETED] ${bounty.id}/${req.params.subId} by ${normalizedAddress}`);
   res.json(updated);
 });
 
@@ -1581,12 +1618,12 @@ app.post('/bounties/:id/approve', async (req, res) => {
   }
   
   // Track who approved this bounty
-  const approvedBy = modWallet;
+  const approvedBy = normalizeWalletAddress(modWallet);
   console.log(`[APPROVAL] Bounty #${bounty.id} approved by mod: ${approvedBy}`);
   
   // CONFLICT OF INTEREST CHECK: Approver cannot be the submitter
-  if (modWallet && bounty.claimedBy && modWallet.toLowerCase() === bounty.claimedBy.toLowerCase()) {
-    console.log(`[CONFLICT OF INTEREST] ${modWallet} tried to approve their own submission on bounty #${bounty.id}`);
+  if (approvedBy && bounty.claimedBy && approvedBy === bounty.claimedBy.toLowerCase()) {
+    console.log(`[CONFLICT OF INTEREST] ${approvedBy} tried to approve their own submission on bounty #${bounty.id}`);
     return res.status(403).json({ error: 'Conflict of interest: You cannot approve your own submission. Another mod must review.' });
   }
 
@@ -2068,6 +2105,7 @@ Format your response as JSON:
  */
 app.post('/bounties/:id/release', async (req, res) => {
   const { address } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
@@ -2076,7 +2114,10 @@ app.post('/bounties/:id/release', async (req, res) => {
   if (!address) {
     return res.status(400).json({ error: 'address required' });
   }
-  if (bounty.claimedBy?.toLowerCase() !== address.toLowerCase()) {
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
+  if (bounty.claimedBy?.toLowerCase() !== normalizedAddress) {
     return res.status(403).json({ error: 'Only the claimer can release this bounty' });
   }
   if (bounty.status !== 'claimed' && bounty.status !== 'submitted') {
@@ -2087,7 +2128,7 @@ app.post('/bounties/:id/release', async (req, res) => {
   bounty.releases = bounty.releases || [];
   bounty.releases.push({
     releasedAt: Date.now(),
-    releasedBy: address.toLowerCase(),
+    releasedBy: normalizedAddress,
     previousStatus: bounty.status,
     submissions: bounty.submissions
   });
@@ -2100,7 +2141,7 @@ app.post('/bounties/:id/release', async (req, res) => {
   bounty.updatedAt = Date.now();
 
   const updated = await updateBounty(bounty.id, bounty);
-  console.log(`[BOUNTY RELEASED] #${bounty.id} released by ${address}`);
+  console.log(`[BOUNTY RELEASED] #${bounty.id} released by ${normalizedAddress}`);
   res.json({ ...updated, message: 'Bounty released and available for others to claim' });
 });
 
@@ -2110,12 +2151,19 @@ app.post('/bounties/:id/release', async (req, res) => {
  */
 app.post('/bounties/:id/cancel', async (req, res) => {
   const { address } = req.body;
+  const normalizedAddress = normalizeWalletAddress(address);
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (bounty.creator !== address?.toLowerCase()) {
+  if (!address) {
+    return res.status(400).json({ error: 'address required' });
+  }
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
+  if (bounty.creator !== normalizedAddress) {
     return res.status(403).json({ error: 'Only creator can cancel' });
   }
   if (bounty.status !== 'open') {
@@ -2204,12 +2252,14 @@ app.patch('/admin/bounties/:id', async (req, res) => {
  */
 app.post('/admin/blocklist', async (req, res) => {
   const { wallet, reason, blockedBy } = req.body;
+  const normalized = normalizeWalletAddress(wallet);
   
   if (!wallet) {
     return res.status(400).json({ error: 'wallet required' });
   }
-  
-  const normalized = wallet.toLowerCase();
+  if (!normalized) {
+    return rejectInvalidWallet(res, 'wallet');
+  }
   
   // Get existing blocklist
   const result = await supabaseRequest('bounties', 'GET', { 
@@ -2256,7 +2306,10 @@ app.post('/admin/blocklist', async (req, res) => {
  * DELETE /admin/blocklist/:wallet
  */
 app.delete('/admin/blocklist/:wallet', async (req, res) => {
-  const normalized = req.params.wallet.toLowerCase();
+  const normalized = normalizeWalletAddress(req.params.wallet);
+  if (!normalized) {
+    return rejectInvalidWallet(res, 'wallet');
+  }
   
   const result = await supabaseRequest('bounties', 'GET', { 
     query: 'select=id,data&data->>type=eq.blocklist' 
@@ -2405,7 +2458,11 @@ app.get('/profile', (req, res) => {
  * GET /api/profile/:address
  */
 app.get('/api/profile/:address', async (req, res) => {
-  const normalizedAddress = req.params.address.toLowerCase();
+  const normalizedAddress = normalizeWalletAddress(req.params.address);
+  if (!normalizedAddress) {
+    return rejectInvalidWallet(res);
+  }
+
   const allBounties = await getAllBounties();
   
   const userBounties = {
