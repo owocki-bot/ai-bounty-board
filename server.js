@@ -26,6 +26,19 @@ function isMod(address) {
   return MOD_WALLETS.includes(address?.toLowerCase());
 }
 
+function hasValidInternalKey(req) {
+  const expected = process.env.INTERNAL_KEY;
+  const provided = req.headers['x-internal-key'];
+  return Boolean(expected) && provided === expected;
+}
+
+function requireInternalKey(req, res, next) {
+  if (!hasValidInternalKey(req)) {
+    return res.status(401).json({ error: 'Admin auth required' });
+  }
+  next();
+}
+
 // ============ AUTOGRADER ============
 // Checks submission against bounty requirements
 // Returns { score: 0-100, passed: boolean, checks: [...] }
@@ -415,6 +428,7 @@ async function deleteBounty(id) {
 const { createStore } = require('./persistent-map');
 const store = createStore('ai-bounty-board');
 const bountiesMemory = store.map('bountiesMemory');
+const BLOCKLIST_MEMORY_ID = '__blocklist__';
 const agents = store.map('agents');
 const webhooks = store.map('webhooks');
 
@@ -996,6 +1010,35 @@ app.get('/mod', async (req, res) => {
       });
     }
     highlightConflicts();
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+      }[ch]));
+    }
+
+    function formatModalValue(value, fallback) {
+      if (value === undefined || value === null || value === '') return fallback;
+      return typeof value === 'string' ? escapeHtml(value) : escapeHtml(JSON.stringify(value, null, 2));
+    }
+
+    function renderProofLink(proof) {
+      if (!proof) return 'None';
+      try {
+        const url = new URL(String(proof));
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          return escapeHtml(proof);
+        }
+        const safeUrl = escapeHtml(url.href);
+        return '<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer">' + safeUrl + '</a>';
+      } catch (e) {
+        return escapeHtml(proof);
+      }
+    }
     
     async function approveBounty(id) {
       if (!modWallet) { showToast('Set your wallet first', true); return; }
@@ -1048,17 +1091,17 @@ app.get('/mod', async (req, res) => {
         const lastSub = bounty.submissions?.[bounty.submissions.length - 1];
         
         document.getElementById('modal-body').innerHTML = \`
-          <h3>#\${bounty.id}: \${bounty.title}</h3>
-          <p><strong>Reward:</strong> \${bounty.rewardFormatted}</p>
-          <p><strong>Submitter:</strong> <code>\${bounty.claimedBy}</code></p>
+          <h3>#\${escapeHtml(bounty.id)}: \${escapeHtml(bounty.title)}</h3>
+          <p><strong>Reward:</strong> \${escapeHtml(bounty.rewardFormatted)}</p>
+          <p><strong>Submitter:</strong> <code>\${escapeHtml(bounty.claimedBy)}</code></p>
           <p><strong>Description:</strong></p>
-          <p style="background:rgba(0,0,0,0.3);padding:1rem;border-radius:8px;white-space:pre-wrap;">\${bounty.description || 'No description'}</p>
+          <p style="background:rgba(0,0,0,0.3);padding:1rem;border-radius:8px;white-space:pre-wrap;">\${formatModalValue(bounty.description, 'No description')}</p>
           <p><strong>Requirements:</strong></p>
-          <ul>\${(bounty.requirements || []).map(r => '<li>' + r + '</li>').join('')}</ul>
+          <ul>\${(bounty.requirements || []).map(r => '<li>' + escapeHtml(r) + '</li>').join('')}</ul>
           <p><strong>Submission:</strong></p>
-          <pre>\${lastSub?.content || 'No content'}</pre>
-          <p><strong>Proof:</strong> \${lastSub?.proof ? '<a href="' + lastSub.proof + '" target="_blank">' + lastSub.proof + '</a>' : 'None'}</p>
-          <p><strong>Autograde Score:</strong> \${lastSub?.autogradeScore || '?'}%</p>
+          <pre>\${formatModalValue(lastSub?.content, 'No content')}</pre>
+          <p><strong>Proof:</strong> \${renderProofLink(lastSub?.proof)}</p>
+          <p><strong>Autograde Score:</strong> \${escapeHtml(lastSub?.autogradeScore ?? '?')}%</p>
         \`;
         document.getElementById('modal').classList.add('active');
       } catch (e) {
@@ -1258,22 +1301,60 @@ app.post('/bounties', async (req, res) => {
 /**
  * Check if wallet is blocklisted
  */
+function normalizeBlocklist(blocklist = {}) {
+  const wallets = Array.isArray(blocklist.wallets)
+    ? [...new Set(blocklist.wallets.filter(Boolean).map(wallet => String(wallet).toLowerCase()))]
+    : [];
+  const entries = Array.isArray(blocklist.entries) ? blocklist.entries : [];
+  return { type: 'blocklist', wallets, entries };
+}
+
+async function getBlocklistRecord() {
+  const result = await supabaseRequest('bounties', 'GET', {
+    query: 'select=id,data&data->>type=eq.blocklist'
+  });
+
+  if (result && result.length > 0) {
+    return { id: result[0].id, data: normalizeBlocklist(result[0].data) };
+  }
+
+  const memoryBlocklist = bountiesMemory.get(BLOCKLIST_MEMORY_ID) ||
+    Array.from(bountiesMemory.values()).find(item => item?.type === 'blocklist');
+
+  return {
+    id: memoryBlocklist ? BLOCKLIST_MEMORY_ID : null,
+    data: normalizeBlocklist(memoryBlocklist)
+  };
+}
+
+async function getBlocklist() {
+  const record = await getBlocklistRecord();
+  return record.data;
+}
+
+async function saveBlocklist(blocklist, blocklistId) {
+  if (SUPABASE_KEY) {
+    if (blocklistId && blocklistId !== BLOCKLIST_MEMORY_ID) {
+      await supabaseRequest('bounties', 'PATCH', {
+        query: `id=eq.${blocklistId}`,
+        body: { data: blocklist }
+      });
+    } else {
+      await supabaseRequest('bounties', 'POST', {
+        body: { data: blocklist }
+      });
+    }
+  } else {
+    bountiesMemory.set(BLOCKLIST_MEMORY_ID, blocklist);
+  }
+  return blocklist;
+}
+
 async function isBlocklisted(address) {
   if (!address) return false;
   const normalized = address.toLowerCase();
-  
-  // Check blocklist record (stored as bounty with type=blocklist)
-  const result = await supabaseRequest('bounties', 'GET', { 
-    query: 'select=data&data->>type=eq.blocklist' 
-  });
-  
-  if (result && result.length > 0) {
-    const blocklist = result[0].data;
-    if (blocklist.wallets && blocklist.wallets.map(w => w.toLowerCase()).includes(normalized)) {
-      return true;
-    }
-  }
-  return false;
+  const blocklist = await getBlocklist();
+  return blocklist.wallets.includes(normalized);
 }
 
 /**
@@ -1815,12 +1896,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
  * POST /internal/bounties
  * Requires X-Internal-Key header
  */
-app.post('/internal/bounties', async (req, res) => {
-  const internalKey = req.headers['x-internal-key'];
-  if (internalKey !== process.env.INTERNAL_KEY) {
-    return res.status(401).json({ error: 'Invalid internal key' });
-  }
-
+app.post('/internal/bounties', requireInternalKey, async (req, res) => {
   const { title, description, reward, tags, deadline, requirements, creator } = req.body;
   
   if (!title || !description || !reward) {
@@ -1861,7 +1937,6 @@ app.post('/internal/bounties', async (req, res) => {
  */
 app.post('/bounties/:id/reject', async (req, res) => {
   const { reason } = req.body;
-  const internalKey = req.headers['x-internal-key'];
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
@@ -1869,8 +1944,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
   }
   
   // Require internal key for rejection
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
-  if (!validInternalKey) {
+  if (!hasValidInternalKey(req)) {
     return res.status(401).json({ error: 'Authentication required. Provide x-internal-key header.' });
   }
   
@@ -1930,9 +2004,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
  * Merges provided fields with existing bounty
  */
 app.patch('/bounties/:id', async (req, res) => {
-  const internalKey = req.headers['x-internal-key'];
-  const validInternalKey = internalKey === process.env.INTERNAL_KEY || internalKey === process.env.INTERNAL_KEY;
-  if (!validInternalKey) {
+  if (!hasValidInternalKey(req)) {
     return res.status(401).json({ error: 'Admin authentication required. Provide x-internal-key header.' });
   }
   
@@ -2164,28 +2236,15 @@ app.get('/health', (req, res) => {
  * Admin: Get blocklist
  * GET /admin/blocklist
  */
-app.get('/admin/blocklist', async (req, res) => {
-  const result = await supabaseRequest('bounties', 'GET', { 
-    query: 'select=data&data->>type=eq.blocklist' 
-  });
-  
-  if (result && result.length > 0) {
-    res.json(result[0].data);
-  } else {
-    res.json({ type: 'blocklist', wallets: [], entries: [] });
-  }
+app.get('/admin/blocklist', requireInternalKey, async (req, res) => {
+  res.json(await getBlocklist());
 });
 
 /**
  * Admin: Fix bounty status/data
  * PATCH /admin/bounties/:id
  */
-app.patch('/admin/bounties/:id', async (req, res) => {
-  const internalKey = req.headers['x-internal-key'];
-  if (internalKey !== process.env.INTERNAL_KEY) {
-    return res.status(401).json({ error: 'Admin auth required' });
-  }
-  
+app.patch('/admin/bounties/:id', requireInternalKey, async (req, res) => {
   const bounty = await getBounty(req.params.id);
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
@@ -2202,7 +2261,7 @@ app.patch('/admin/bounties/:id', async (req, res) => {
  * Admin: Add wallet to blocklist
  * POST /admin/blocklist
  */
-app.post('/admin/blocklist', async (req, res) => {
+app.post('/admin/blocklist', requireInternalKey, async (req, res) => {
   const { wallet, reason, blockedBy } = req.body;
   
   if (!wallet) {
@@ -2210,20 +2269,8 @@ app.post('/admin/blocklist', async (req, res) => {
   }
   
   const normalized = wallet.toLowerCase();
-  
-  // Get existing blocklist
-  const result = await supabaseRequest('bounties', 'GET', { 
-    query: 'select=id,data&data->>type=eq.blocklist' 
-  });
-  
-  let blocklistId, blocklist;
-  if (result && result.length > 0) {
-    blocklistId = result[0].id;
-    blocklist = result[0].data;
-  } else {
-    // Create new blocklist
-    blocklist = { type: 'blocklist', wallets: [], entries: [] };
-  }
+  const record = await getBlocklistRecord();
+  const blocklist = record.data;
   
   // Add wallet if not already blocked
   if (!blocklist.wallets.includes(normalized)) {
@@ -2234,17 +2281,8 @@ app.post('/admin/blocklist', async (req, res) => {
       blockedAt: new Date().toISOString(),
       blockedBy: blockedBy || 'admin'
     });
-    
-    if (blocklistId) {
-      await supabaseRequest('bounties', 'PATCH', { 
-        query: `id=eq.${blocklistId}`,
-        body: { data: blocklist }
-      });
-    } else {
-      await supabaseRequest('bounties', 'POST', { 
-        body: { data: blocklist }
-      });
-    }
+
+    await saveBlocklist(blocklist, record.id);
   }
   
   console.log(`[BLOCKLIST] Added ${normalized} - ${reason}`);
@@ -2255,27 +2293,20 @@ app.post('/admin/blocklist', async (req, res) => {
  * Admin: Remove wallet from blocklist
  * DELETE /admin/blocklist/:wallet
  */
-app.delete('/admin/blocklist/:wallet', async (req, res) => {
+app.delete('/admin/blocklist/:wallet', requireInternalKey, async (req, res) => {
   const normalized = req.params.wallet.toLowerCase();
+  const record = await getBlocklistRecord();
   
-  const result = await supabaseRequest('bounties', 'GET', { 
-    query: 'select=id,data&data->>type=eq.blocklist' 
-  });
-  
-  if (!result || result.length === 0) {
+  if (!record.id && record.data.wallets.length === 0) {
     return res.status(404).json({ error: 'Blocklist not found' });
   }
   
-  const blocklistId = result[0].id;
-  const blocklist = result[0].data;
+  const blocklist = record.data;
   
   blocklist.wallets = blocklist.wallets.filter(w => w.toLowerCase() !== normalized);
-  blocklist.entries = blocklist.entries.filter(e => e.wallet.toLowerCase() !== normalized);
+  blocklist.entries = blocklist.entries.filter(e => e.wallet?.toLowerCase() !== normalized);
   
-  await supabaseRequest('bounties', 'PATCH', { 
-    query: `id=eq.${blocklistId}`,
-    body: { data: blocklist }
-  });
+  await saveBlocklist(blocklist, record.id);
   
   console.log(`[BLOCKLIST] Removed ${normalized}`);
   res.json({ success: true, blocklist });
