@@ -6,9 +6,12 @@ function registerBrowseHandler(app, getAllBounties) {
 
 app.get('/browse', async (req, res) => {
   try {
-  const { status, tag, page = 1 } = req.query;
+  const { status: rawStatus, tag: rawTag, page = 1 } = req.query;
+  const status = typeof rawStatus === 'string' ? rawStatus : '';
+  const tag = typeof rawTag === 'string' ? rawTag : '';
+  const rawPage = Array.isArray(page) ? page[0] : page;
   const perPage = 15; // Limit to 15 bounties per page for faster loading
-  const pageNum = Math.max(1, parseInt(page) || 1);
+  const pageNum = Math.max(1, parseInt(rawPage, 10) || 1);
   
   let allBounties = await getAllBounties();
   console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
@@ -49,14 +52,50 @@ app.get('/browse', async (req, res) => {
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
   }
 
+  function safeJsonForScript(value) {
+    return JSON.stringify(value).replace(/[<>&\u2028\u2029]/g, ch => ({
+      '<': '\\u003c',
+      '>': '\\u003e',
+      '&': '\\u0026',
+      '\u2028': '\\u2028',
+      '\u2029': '\\u2029'
+    }[ch]));
+  }
+
+  function buildBrowseUrl(params = {}) {
+    const search = new URLSearchParams();
+    if (params.tag) search.set('tag', String(params.tag));
+    if (params.status) search.set('status', String(params.status));
+    if (params.page) search.set('page', String(params.page));
+    const query = search.toString();
+    return '/browse' + (query ? '?' + query : '');
+  }
+
+  function safeExternalUrl(value) {
+    try {
+      const url = new URL(String(value || ''));
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        return url.href;
+      }
+    } catch (err) {
+      return '';
+    }
+    return '';
+  }
+
   const statusColors = {
     open: '#10b981', claimed: '#f59e0b', submitted: '#3b82f6',
     completed: '#8b5cf6', cancelled: '#ef4444'
   };
 
   const bountyCards = paginatedBounties.map(b => {
+    const bountyId = String(b.id || '');
+    const encodedBountyId = encodeURIComponent(bountyId);
     const subs = (b.submissions || []);
-    const tagsHtml = (b.tags || []).map(t => '<a href="/browse?tag=' + t + '" class="tag">#' + esc(t) + '</a>').join(' ');
+    const tagsHtml = (b.tags || []).map(t => {
+      const href = buildBrowseUrl({ tag: t });
+      return '<a href="' + esc(href) + '" class="tag">#' + esc(t) + '</a>';
+    }).join(' ');
     const reqList = Array.isArray(b.requirements) ? b.requirements : [];
     const reqsHtml = (reqList.length > 0)
       ? '<div class="requirements"><strong>Requirements:</strong><ul>' + reqList.map(r => '<li>' + esc(r) + '</li>').join('') + '</ul></div>'
@@ -67,15 +106,21 @@ app.get('/browse', async (req, res) => {
     const subsHtml = subs.length > 0
       ? '<div class="submissions-section"><h4 class="submissions-title">📝 Submissions (' + subs.length + ')</h4>' +
         subs.map(s => {
-          const proofLink = s.proof ? '<a href="' + esc(s.proof) + '" target="_blank" class="submission-link">🔗 ' + esc(s.proof) + '</a>' : '';
+          const proofText = s.proof || '';
+          const proofHref = safeExternalUrl(proofText);
+          const proofLink = proofText
+            ? (proofHref
+              ? '<a href="' + esc(proofHref) + '" target="_blank" rel="noopener noreferrer" class="submission-link">🔗 ' + esc(proofText) + '</a>'
+              : '<span class="submission-link">🔗 ' + esc(proofText) + '</span>')
+            : '';
           const editedTag = s.editedAt ? ' (edited)' : '';
-          return '<div class="submission-item" data-sub-id="' + s.id + '">' +
+          return '<div class="submission-item" data-sub-id="' + esc(s.id) + '">' +
             '<div class="submission-body">' + proofLink +
             '<p class="submission-content">' + esc(s.content || '') + '</p>' +
             '<span class="submission-time">' + new Date(s.submittedAt).toLocaleString() + editedTag + '</span></div>' +
             '<div class="submission-btns">' +
-            '<button class="btn-sm btn-edit" data-bounty-id="' + b.id + '" data-sub-id="' + s.id + '">✏️</button>' +
-            '<button class="btn-sm btn-del" data-bounty-id="' + b.id + '" data-sub-id="' + s.id + '">🗑️</button>' +
+            '<button class="btn-sm btn-edit" data-bounty-id="' + esc(bountyId) + '" data-sub-id="' + esc(s.id) + '">✏️</button>' +
+            '<button class="btn-sm btn-del" data-bounty-id="' + esc(bountyId) + '" data-sub-id="' + esc(s.id) + '">🗑️</button>' +
             '</div></div>';
         }).join('') +
         '</div>'
@@ -83,16 +128,16 @@ app.get('/browse', async (req, res) => {
 
     let actionBtns = '';
     if (b.status === 'open') {
-      actionBtns += '<button class="btn btn-claim" data-bounty-id="' + b.id + '">🎯 Claim This Bounty</button>';
+      actionBtns += '<button class="btn btn-claim" data-bounty-id="' + esc(bountyId) + '">🎯 Claim This Bounty</button>';
     }
     if (b.status === 'claimed' || b.status === 'submitted') {
       const label = b.status === 'claimed' ? '📤 Submit Proof' : '📤 Add Submission';
-      actionBtns += '<button class="btn btn-submit-proof" data-bounty-id="' + b.id + '">' + label + '</button>';
+      actionBtns += '<button class="btn btn-submit-proof" data-bounty-id="' + esc(bountyId) + '">' + label + '</button>';
     }
-    actionBtns += '<button class="btn btn-secondary btn-copy" data-bounty-id="' + b.id + '">📋 ID</button>';
-    actionBtns += '<a href="/bounties/' + b.id + '" class="btn btn-secondary">JSON</a>';
+    actionBtns += '<button class="btn btn-secondary btn-copy" data-bounty-id="' + esc(bountyId) + '">📋 ID</button>';
+    actionBtns += '<a href="/bounties/' + encodedBountyId + '" class="btn btn-secondary">JSON</a>';
 
-    return '<div class="bounty-card" data-id="' + esc(b.id) + '">' +
+    return '<div class="bounty-card" data-id="' + esc(bountyId) + '">' +
       '<div class="bounty-header">' +
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
@@ -107,7 +152,7 @@ app.get('/browse', async (req, res) => {
       '<div class="bounty-actions">' + actionBtns + '</div></div>';
   }).join('');
 
-  const bountiesJson = JSON.stringify(allBounties.map(b => ({
+  const bountiesJson = safeJsonForScript(allBounties.map(b => ({
     id: b.id, title: b.title, description: b.description, status: b.status,
     reward: b.reward, rewardFormatted: b.rewardFormatted, claimedBy: b.claimedBy,
     submissions: (b.submissions || []).map(s => ({
@@ -116,7 +161,7 @@ app.get('/browse', async (req, res) => {
   })));
 
   // All bounties for profile section (unfiltered)
-  const allBountiesJson = JSON.stringify(allBountiesUnfiltered.map(b => ({
+  const allBountiesJson = safeJsonForScript(allBountiesUnfiltered.map(b => ({
     id: b.id, title: b.title, status: b.status, reward: b.reward, 
     rewardFormatted: b.rewardFormatted, claimedBy: b.claimedBy, creator: b.creator
   })));
@@ -127,25 +172,19 @@ app.get('/browse', async (req, res) => {
   
   const filterTagsHtml = visibleTags.map(t => {
     const isActive = tag === t ? ' active' : '';
-    const href = '/browse?tag=' + t + (status ? '&status=' + status : '');
-    return '<a href="' + href + '" class="filter-btn' + isActive + '">#' + esc(t) + '</a>';
+    const href = buildBrowseUrl({ tag: t, status });
+    return '<a href="' + esc(href) + '" class="filter-btn' + isActive + '">#' + esc(t) + '</a>';
   }).join('') + (hiddenTags.length > 0 ? 
     '<select class="filter-select" onchange="if(this.value)window.location.href=this.value">' +
     '<option value="">+' + hiddenTags.length + ' more</option>' +
     hiddenTags.map(t => {
-      const href = '/browse?tag=' + t + (status ? '&status=' + status : '');
-      return '<option value="' + href + '"' + (tag === t ? ' selected' : '') + '>#' + esc(t) + '</option>';
+      const href = buildBrowseUrl({ tag: t, status });
+      return '<option value="' + esc(href) + '"' + (tag === t ? ' selected' : '') + '>#' + esc(t) + '</option>';
     }).join('') +
     '</select>' : '');
 
   // Build pagination controls
-  const buildPageUrl = (p) => {
-    const params = new URLSearchParams();
-    if (status) params.set('status', status);
-    if (tag) params.set('tag', tag);
-    params.set('page', p);
-    return '/browse?' + params.toString();
-  };
+  const buildPageUrl = (p) => buildBrowseUrl({ status, tag, page: p });
   
   let paginationHtml = '';
   if (totalPages > 1) {
@@ -339,7 +378,7 @@ app.get('/browse', async (req, res) => {
     '<a href="/browse?status=completed" class="filter-btn' + (status === 'completed' ? ' active' : '') + '">Completed</a>' +
     '</div></div>' +
     '<div class="filter-group"><span class="filter-label">Tags</span><div class="filter-buttons">' +
-    '<a href="/browse' + (status ? '?status=' + status : '') + '" class="filter-btn' + (!tag ? ' active' : '') + '">All</a>' +
+    '<a href="' + esc(buildBrowseUrl({ status })) + '" class="filter-btn' + (!tag ? ' active' : '') + '">All</a>' +
     filterTagsHtml +
     '</div></div></div>\n' +
     gridHtml + '\n' +
