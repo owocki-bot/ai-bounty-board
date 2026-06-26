@@ -26,6 +26,16 @@ function isMod(address) {
   return MOD_WALLETS.includes(address?.toLowerCase());
 }
 
+function escapeHtml(value) {
+  if (typeof value !== 'string') value = String(value || '');
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
 // ============ AUTOGRADER ============
 // Checks submission against bounty requirements
 // Returns { score: 0-100, passed: boolean, checks: [...] }
@@ -2452,16 +2462,22 @@ app.get('/', async (req, res) => {
   const bountyList = validBounties
     .filter(b => b.status === 'open')
     .slice(0, 10)
-    .map(b => `
+    .map(b => {
+      const title = escapeHtml(b.title || 'Untitled');
+      const description = String(b.description || '');
+      const shortDescription = description.slice(0, 150) + (description.length > 150 ? '...' : '');
+      const tagsHtml = (b.tags || []).map(t => `<span class="tag">#${escapeHtml(t)}</span>`).join(' ');
+      return `
       <div class="bounty">
-        <h3>${b.title || 'Untitled'}</h3>
-        <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
+        <h3>${title}</h3>
+        <p>${escapeHtml(shortDescription)}</p>
         <div class="meta">
-          <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
-          <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
+          <span class="reward">💰 ${escapeHtml(b.rewardFormatted || '0 USDC')}</span>
+          <span class="tags">${tagsHtml}</span>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
   res.send(`
 <!DOCTYPE html>
