@@ -26,6 +26,33 @@ function isMod(address) {
   return MOD_WALLETS.includes(address?.toLowerCase());
 }
 
+function getLatestSubmission(bounty) {
+  return bounty.submissions?.[bounty.submissions.length - 1] || null;
+}
+
+function buildModApprovalMessage(bounty) {
+  const latestSubmission = getLatestSubmission(bounty);
+  return [
+    'owockibot:approve-bounty',
+    `bounty:${bounty.id}`,
+    `claimer:${bounty.claimedBy || ''}`,
+    `submission:${latestSubmission?.id || ''}`,
+    `updatedAt:${bounty.updatedAt || ''}`
+  ].join('\n');
+}
+
+function verifyModApprovalSignature(bounty, modWallet, signature) {
+  if (!modWallet || !signature || !isMod(modWallet)) return false;
+
+  try {
+    const recovered = ethers.verifyMessage(buildModApprovalMessage(bounty), signature);
+    return recovered.toLowerCase() === modWallet.toLowerCase();
+  } catch (err) {
+    console.log(`[APPROVAL DENIED] Invalid mod signature: ${err.message}`);
+    return false;
+  }
+}
+
 // ============ AUTOGRADER ============
 // Checks submission against bounty requirements
 // Returns { score: 0-100, passed: boolean, checks: [...] }
@@ -996,16 +1023,49 @@ app.get('/mod', async (req, res) => {
       });
     }
     highlightConflicts();
+
+    function buildModApprovalMessage(bounty) {
+      var submissions = bounty.submissions || [];
+      var latestSubmission = submissions[submissions.length - 1] || {};
+      return [
+        'owockibot:approve-bounty',
+        'bounty:' + bounty.id,
+        'claimer:' + (bounty.claimedBy || ''),
+        'submission:' + (latestSubmission.id || ''),
+        'updatedAt:' + (bounty.updatedAt || '')
+      ].join('\\n');
+    }
     
     async function approveBounty(id) {
       if (!modWallet) { showToast('Set your wallet first', true); return; }
+      if (!window.ethereum) { showToast('MetaMask signature required for approval', true); return; }
       if (!confirm('Approve this submission and release payment?')) return;
       
       try {
+        const bountyRes = await fetch('/bounties/' + id);
+        const bounty = await bountyRes.json();
+        if (!bountyRes.ok) {
+          showToast(bounty.error || 'Could not load bounty for signing', true);
+          return;
+        }
+
+        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        const selected = (accounts && accounts[0] || '').toLowerCase();
+        if (selected !== modWallet.toLowerCase()) {
+          showToast('Connected wallet must match the mod wallet field', true);
+          return;
+        }
+
+        const message = buildModApprovalMessage(bounty);
+        const signature = await window.ethereum.request({
+          method: 'personal_sign',
+          params: [message, modWallet]
+        });
+
         const res = await fetch('/bounties/' + id + '/approve', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ modWallet })
+          body: JSON.stringify({ modWallet, signature })
         });
         const data = await res.json();
         if (res.ok) {
@@ -1557,7 +1617,7 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
  * SECURITY: ONLY mod wallets can approve (human oversight required)
  */
 app.post('/bounties/:id/approve', async (req, res) => {
-  const { modWallet } = req.body;
+  const { modWallet, signature } = req.body;
   const bounty = await getBounty(req.params.id);
   
   if (!bounty) {
@@ -1567,16 +1627,14 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(400).json({ error: 'No submission to approve' });
   }
 
-  // SECURITY: ONLY mod wallets can approve bounties
-  // This prevents API abuse even if internal key is compromised
-  const isModApproval = modWallet && isMod(modWallet);
-  
-  if (!isModApproval) {
-    console.log(`[APPROVAL DENIED] Bounty #${bounty.id} - non-mod wallet attempted approval: ${modWallet || 'none'}`);
+  // SECURITY: ONLY signed approvals from mod wallets can release bounty escrow.
+  // A caller cannot become a mod by posting a whitelisted address in JSON.
+  if (!verifyModApprovalSignature(bounty, modWallet, signature)) {
+    console.log(`[APPROVAL DENIED] Bounty #${bounty.id} - missing or invalid mod signature for ${modWallet || 'none'}`);
     return res.status(403).json({ 
-      error: 'Only moderators can approve bounties',
-      message: 'Bounty approvals require human mod review. Internal key and creator approvals are disabled for security.',
-      hint: 'If you are a mod, provide your mod wallet address in the request body as "modWallet".'
+      error: 'Valid moderator signature required',
+      message: 'Bounty approvals require a signature from a whitelisted moderator wallet. Internal key and unsigned creator approvals are disabled for security.',
+      hint: 'Sign the approval message with the moderator wallet and include both "modWallet" and "signature".'
     });
   }
   
