@@ -550,12 +550,52 @@ function requirePayment(amount, description) {
   };
 }
 
+function isPrivateWebhookHost(hostname) {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost'
+    || host.endsWith('.localhost')
+    || host === '0.0.0.0'
+    || host === '::1'
+    || /^127\./.test(host)
+    || /^10\./.test(host)
+    || /^192\.168\./.test(host)
+    || /^169\.254\./.test(host)
+    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host);
+}
+
+function validateWebhookEndpoint(endpoint) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch (e) {
+    throw new Error('Invalid webhook endpoint URL');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('Webhook endpoint must be http or https');
+  }
+  if (isPrivateWebhookHost(url.hostname)) {
+    throw new Error('Webhook endpoint must be a public URL');
+  }
+  return url.toString();
+}
+
+function verifyWebhookRegistrationSignature({ name, endpoint, agentAddress, signature }) {
+  if (!agentAddress || !signature) return false;
+  try {
+    const message = `register-webhook:${name}:${endpoint}`;
+    const recoveredAddress = ethers.verifyMessage(message, signature);
+    return recoveredAddress.toLowerCase() === agentAddress.toLowerCase();
+  } catch (e) {
+    return false;
+  }
+}
+
 /**
  * Register an AI agent
  * POST /agents
  */
 app.post('/agents', (req, res) => {
-  const { address, name, capabilities, endpoint, webhookUrl } = req.body;
+  const { address, name, capabilities, endpoint, webhookUrl, webhookSignature, signature } = req.body;
   
   if (!address || !name) {
     return res.status(400).json({ error: 'address and name required' });
@@ -574,14 +614,38 @@ app.post('/agents', (req, res) => {
 
   agents.set(agent.address, agent);
   
-  // Register webhook if provided
+  // Register webhook if provided. This must prove control of the wallet;
+  // otherwise /agents bypasses the authenticated /webhooks route.
   if (webhookUrl) {
-    webhooks.set(agent.address, {
-      name: name,
+    let normalizedWebhookUrl;
+    try {
+      normalizedWebhookUrl = validateWebhookEndpoint(webhookUrl);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+
+    const webhookAuthOk = verifyWebhookRegistrationSignature({
+      name,
       endpoint: webhookUrl,
-      agentAddress: agent.address
+      agentAddress: address,
+      signature: webhookSignature || signature
     });
-    console.log(`[WEBHOOK] Registered webhook for ${name}: ${webhookUrl}`);
+
+    if (!webhookAuthOk) {
+      return res.status(401).json({
+        error: 'Webhook authentication required',
+        hint: 'Sign message "register-webhook:{name}:{webhookUrl}" with the agent wallet and send it as webhookSignature'
+      });
+    }
+
+    webhooks.set(agent.address, {
+      id: agent.address,
+      name: name,
+      endpoint: normalizedWebhookUrl,
+      agentAddress: agent.address,
+      createdAt: Date.now()
+    });
+    console.log(`[WEBHOOK] Registered authenticated webhook for ${name}: ${normalizedWebhookUrl}`);
   }
   
   res.json(agent);
@@ -622,21 +686,18 @@ app.post('/webhooks', (req, res) => {
     return res.status(400).json({ error: 'name and endpoint required' });
   }
   
-  // Validate endpoint URL
+  let normalizedEndpoint;
   try {
-    const url = new URL(endpoint);
-    if (!['http:', 'https:'].includes(url.protocol)) {
-      return res.status(400).json({ error: 'Webhook endpoint must be http or https' });
-    }
+    normalizedEndpoint = validateWebhookEndpoint(endpoint);
   } catch (e) {
-    return res.status(400).json({ error: 'Invalid webhook endpoint URL' });
+    return res.status(400).json({ error: e.message });
   }
 
   const id = uuidv4();
-  webhooks.set(id, { id, name, endpoint, agentAddress: agentAddress || null, createdAt: Date.now() });
+  webhooks.set(id, { id, name, endpoint: normalizedEndpoint, agentAddress: agentAddress || null, createdAt: Date.now() });
   
-  console.log(`[WEBHOOK] Registered (authenticated): ${name} -> ${endpoint}`);
-  res.json({ id, name, endpoint, message: 'Webhook registered. You will be notified of new bounties.' });
+  console.log(`[WEBHOOK] Registered (authenticated): ${name} -> ${normalizedEndpoint}`);
+  res.json({ id, name, endpoint: normalizedEndpoint, message: 'Webhook registered. You will be notified of new bounties.' });
 });
 
 /**
