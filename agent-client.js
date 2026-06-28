@@ -50,7 +50,7 @@ class AIBountyAgent {
    */
   async listBounties(filters = {}) {
     const params = new URLSearchParams(filters);
-    const res = await fetch(`${this.serverUrl}/bounties?${params}`);
+    const res = await fetch(`${this.serverUrl}/bounties${params}`);
     return res.json();
   }
 
