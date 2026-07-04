@@ -2390,7 +2390,7 @@ app.get('/.well-known/x402', (req, res) => {
 
 // 1-click claim UI handler (loaded from browse-handler.js)
 require("./browse-handler")(app, getAllBounties);
-
+require("./analytics-handler")(app, getAllBounties);
 
 /**
  * Profile redirect - profile section is now embedded in /browse
