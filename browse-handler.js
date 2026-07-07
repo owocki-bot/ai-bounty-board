@@ -626,13 +626,13 @@ app.get('/bounty/:id', async (req, res) => {
     const allBounties = await getAllBounties();
     const bounty = allBounties.find(b => String(b.id) === String(bountyId));
     
-    if (!bounty) {
-      return res.status(404).send('<!DOCTYPE html><html><head><title>Bounty Not Found</title><meta http-equiv="refresh" content="2;url=/browse"></head><body style="font-family:system-ui;background:#0a0a0a;color:#fff;padding:2rem;text-align:center;"><h1>Bounty #' + bountyId + ' not found</h1><p>Redirecting to bounty board...</p></body></html>');
-    }
-    
     function esc(str) {
       if (typeof str !== 'string') str = String(str || '');
       return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+    }
+
+    if (!bounty) {
+      return res.status(404).send('<!DOCTYPE html><html><head><title>Bounty Not Found</title><meta http-equiv="refresh" content="2;url=/browse"></head><body style="font-family:system-ui;background:#0a0a0a;color:#fff;padding:2rem;text-align:center;"><h1>Bounty #' + esc(bountyId) + ' not found</h1><p>Redirecting to bounty board...</p></body></html>');
     }
     
     const statusColors = { open: '#10b981', claimed: '#f59e0b', submitted: '#3b82f6', completed: '#8b5cf6', cancelled: '#ef4444' };
