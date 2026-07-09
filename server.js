@@ -2129,22 +2129,28 @@ app.post('/bounties/:id/cancel', async (req, res) => {
   res.json(updated);
 });
 
+function buildStats(allBounties) {
+  const validBounties = allBounties.filter(b => b.title);
+  const completedBounties = validBounties.filter(b => b.status === 'completed');
+
+  return {
+    totalBounties: validBounties.length,
+    openBounties: validBounties.filter(b => b.status === 'open').length,
+    completedBounties: completedBounties.length,
+    totalRewardsUSDC: completedBounties
+      .reduce((sum, b) => sum + parseInt(b.reward || 0), 0) / 1e6,
+    totalAgents: agents.size,
+    dbConnected: !!SUPABASE_KEY
+  };
+}
+
 /**
  * Stats endpoint
  * GET /stats
  */
 app.get('/stats', async (req, res) => {
   const allBounties = await getAllBounties();
-  res.json({
-    totalBounties: allBounties.length,
-    openBounties: allBounties.filter(b => b.status === 'open').length,
-    completedBounties: allBounties.filter(b => b.status === 'completed').length,
-    totalRewardsUSDC: allBounties
-      .filter(b => b.status === 'completed')
-      .reduce((sum, b) => sum + parseInt(b.reward || 0), 0) / 1e6,
-    totalAgents: agents.size,
-    dbConnected: !!SUPABASE_KEY
-  });
+  res.json(buildStats(allBounties));
 });
 
 /**
@@ -2438,15 +2444,14 @@ app.get('/', async (req, res) => {
   const allBounties = await getAllBounties();
   // Filter out corrupted bounties
   const validBounties = allBounties.filter(b => b.title);
-  const completedBounties = validBounties.filter(b => b.status === 'completed');
-  const totalPaidUSDC = completedBounties.reduce((sum, b) => sum + parseInt(b.reward || 0), 0) / 1e6;
+  const statsJson = buildStats(allBounties);
   
   const stats = {
-    totalBounties: validBounties.length,
-    openBounties: validBounties.filter(b => b.status === 'open').length,
-    completedBounties: completedBounties.length,
-    totalPaidUSDC: totalPaidUSDC.toFixed(2),
-    totalAgents: agents.size
+    totalBounties: statsJson.totalBounties,
+    openBounties: statsJson.openBounties,
+    completedBounties: statsJson.completedBounties,
+    totalPaidUSDC: statsJson.totalRewardsUSDC.toFixed(2),
+    totalAgents: statsJson.totalAgents
   };
 
   const bountyList = validBounties
