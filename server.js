@@ -2452,16 +2452,24 @@ app.get('/', async (req, res) => {
   const bountyList = validBounties
     .filter(b => b.status === 'open')
     .slice(0, 10)
-    .map(b => `
+    .map(b => {
+      const desc = b.description || '';
+      const preview = desc.length > 150 ? desc.slice(0, 150) + '…' : desc;
+      const readMore =
+        desc.length > 150
+          ? ` <a href="/bounty/${b.id}" style="color:#00d4ff;text-decoration:none;font-weight:600;">Read more</a>`
+          : '';
+      return `
       <div class="bounty">
-        <h3>${b.title || 'Untitled'}</h3>
-        <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
+        <h3><a href="/bounty/${b.id}" style="color:inherit;text-decoration:none;">${b.title || 'Untitled'}</a></h3>
+        <p>${preview}${readMore}</p>
         <div class="meta">
           <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
           <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
         </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
   res.send(`
 <!DOCTYPE html>
