@@ -14,6 +14,17 @@ const reputation = require('./reputation');
 const app = express();
 app.use(cors());
 
+// Vercel/clients may call /api/* — normalize to root routes handled below.
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/api/")) {
+    req.url = req.url.slice(4) || "/";
+  } else if (req.url === "/api") {
+    req.url = "/";
+  }
+  next();
+});
+
+
 // ============ MOD WALLETS ============
 // Mods can approve submissions (except their own - conflict of interest check)
 const MOD_WALLETS = [
@@ -2723,8 +2734,9 @@ function seedDemoBounties() {
 seedDemoBounties();
 
 const PORT = process.env.PORT || 3002;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`
+if (!process.env.VERCEL) {
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║                   AI BOUNTY BOARD                         ║
 ║                   with x402 Payments                      ║
@@ -2745,7 +2757,8 @@ Endpoints:
   GET  /stats              - Platform stats
   GET  /.well-known/x402   - x402 configuration
   `);
-});
+  });
+}
 
 module.exports = app;
 // Deployed at Tue Feb  3 04:01:19 PM MST 2026
