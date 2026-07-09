@@ -4,6 +4,11 @@
  */
 function registerBrowseHandler(app, getAllBounties) {
 
+app.get('/bounty/', (req, res) => {
+  const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+  res.redirect(302, '/browse' + qs);
+});
+
 app.get('/browse', async (req, res) => {
   try {
   const { status, tag, page = 1 } = req.query;
@@ -47,6 +52,18 @@ app.get('/browse', async (req, res) => {
   function esc(str) {
     if (typeof str !== 'string') str = String(str || '');
     return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+  }
+
+  function formatDescription(description, bountyId, maxLen) {
+    const desc = description || '';
+    if (desc.length <= maxLen) {
+      return '<p class="bounty-desc">' + esc(desc) + '</p>';
+    }
+    return (
+      '<p class="bounty-desc">' +
+      esc(desc.slice(0, maxLen)) +
+      '… <a class="desc-read-more" href="/bounty/' + esc(bountyId) + '">Read full description</a></p>'
+    );
   }
 
   const statusColors = {
@@ -96,8 +113,8 @@ app.get('/browse', async (req, res) => {
       '<div class="bounty-header">' +
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
-      '<h3 class="bounty-title">' + esc(b.title) + '</h3>' +
-      '<p class="bounty-desc">' + esc(b.description) + '</p>' +
+      '<h3 class="bounty-title"><a class="bounty-title-link" href="/bounty/' + esc(b.id) + '">' + esc(b.title) + '</a></h3>' +
+      formatDescription(b.description, b.id, 220) +
       '<div class="bounty-tags">' + tagsHtml + '</div>' +
       '<div class="bounty-meta">' +
       '<div class="meta-item"><span class="meta-label">Creator</span><span class="meta-value">' + (b.creator || '').slice(0,6) + '...' + (b.creator || '').slice(-4) + '</span></div>' +
@@ -229,6 +246,10 @@ app.get('/browse', async (req, res) => {
     '.reward { font-size: 1.1rem; font-weight: bold; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\n' +
     '.bounty-title { font-size: 1.2rem; margin-bottom: 0.75rem; color: #fff; }\n' +
     '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 1rem; }\n' +
+    '.desc-read-more { color: #00d4ff; text-decoration: none; font-weight: 600; }\n' +
+    '.desc-read-more:hover { text-decoration: underline; }\n' +
+    '.bounty-title-link { color: inherit; text-decoration: none; }\n' +
+    '.bounty-title-link:hover { color: #00d4ff; }\n' +
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
     '.tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }\n' +
