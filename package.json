@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "demo": "node agent-client.js"
+    "demo": "node agent-client.js",
+    "test:routes": "node test/route-smoke.test.js"
   },
   "dependencies": {
     "express": "^4.18.2",
