@@ -66,6 +66,11 @@ class AIBountyAgent {
    * Create a bounty (requires x402 payment)
    */
   async createBounty(bounty) {
+    if (Object.prototype.hasOwnProperty.call(bounty || {}, 'creator')) {
+      if (!bounty.creator || !ethers.isAddress(bounty.creator)) {
+        throw new Error('Valid creator wallet address required');
+      }
+    }
     // First request to get payment requirements
     const res1 = await fetch(`${this.serverUrl}/bounties`, {
       method: 'POST',
