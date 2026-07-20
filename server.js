@@ -26,6 +26,13 @@ function isMod(address) {
   return MOD_WALLETS.includes(address?.toLowerCase());
 }
 
+function requireValidAddress(address, fieldName = 'address') {
+  if (!address || typeof address !== 'string' || !ethers.isAddress(address)) {
+    return { ok: false, error: `valid ${fieldName} required (0x + 40 hex chars)` };
+  }
+  return { ok: true, address: ethers.getAddress(address) };
+}
+
 // ============ AUTOGRADER ============
 // Checks submission against bounty requirements
 // Returns { score: 0-100, passed: boolean, checks: [...] }
@@ -197,8 +204,8 @@ const RATE_LIMIT_MAX_SUBMISSIONS = 5; // max 5 submissions per minute
 const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 
 // ============ CONCURRENT CLAIM LIMITS ============
-// Prevents wallet hoarding — temporary until proof of reputation/identity
-// Only counts 'claimed' (not yet submitted) — once you submit, slot frees up
+// Prevents wallet hoarding 鈥?temporary until proof of reputation/identity
+// Only counts 'claimed' (not yet submitted) 鈥?once you submit, slot frees up
 const MAX_PENDING_CLAIMS = 3; // max bounties claimed but not yet submitted per wallet
 
 function checkRateLimit(address, action = 'claim') {
@@ -814,9 +821,9 @@ app.get('/mod', async (req, res) => {
         <td style="${workTimeStyle}">${claimToSubmitMin} min</td>
         <td>${submittedAt}</td>
         <td>
-          <button class="btn-approve" onclick="approveBounty('${esc(b.id)}')">✅ Approve</button>
-          <button class="btn-reject" onclick="rejectBounty('${esc(b.id)}')">❌ Reject</button>
-          <button class="btn-view" onclick="viewSubmission('${esc(b.id)}')">👁️ View</button>
+          <button class="btn-approve" onclick="approveBounty('${esc(b.id)}')">鉁?Approve</button>
+          <button class="btn-reject" onclick="rejectBounty('${esc(b.id)}')">鉂?Reject</button>
+          <button class="btn-view" onclick="viewSubmission('${esc(b.id)}')">馃憗锔?View</button>
         </td>
       </tr>
     `;
@@ -907,20 +914,20 @@ app.get('/mod', async (req, res) => {
 </head>
 <body>
   <div class="container">
-    <h1>🛡️ <span>Mod</span> Dashboard</h1>
+    <h1>馃洝锔?<span>Mod</span> Dashboard</h1>
     <p class="subtitle">Review and approve bounty submissions</p>
     
     <div class="wallet-bar">
       <span>Your wallet:</span>
       <input type="text" id="mod-wallet" placeholder="0x... (paste your mod wallet)">
       <button id="connect-btn" onclick="setModWallet()">Connect</button>
-      <span id="wallet-status" style="color:#4ade80;display:none;">✓ Connected</span>
+      <span id="wallet-status" style="color:#4ade80;display:none;">鉁?Connected</span>
     </div>
     
     <div class="info-banner" style="background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.3);border-radius:12px;padding:1rem;margin-bottom:1.5rem;">
-      <strong>📋 How Scoring Works:</strong>
+      <strong>馃搵 How Scoring Works:</strong>
       <ul style="margin:0.5rem 0 0 1.5rem;color:#aaa;font-size:0.9rem;">
-        <li><strong>Score is advisory only</strong> — you have final say</li>
+        <li><strong>Score is advisory only</strong> 鈥?you have final say</li>
         <li>Auto-reject only if: score &lt;20% AND no proof URL</li>
         <li>Review submission content + proof before approving</li>
         <li>Check requirements are actually met (not just keywords)</li>
@@ -1182,11 +1189,21 @@ app.post('/bounties', async (req, res) => {
     }
     const message = `x402:${payment.recipient}:${payment.amount}:${payment.nonce}`;
     const recoveredAddress = ethers.verifyMessage(message, payment.signature);
+    if (!ethers.isAddress(payment.payer)) {
+      throw new Error('Invalid payer wallet address in payment');
+    }
     if (recoveredAddress.toLowerCase() !== payment.payer.toLowerCase()) {
       throw new Error('Invalid signature');
     }
     if (BigInt(payment.amount) < totalRequired) {
       throw new Error(`Insufficient payment: sent ${payment.amount}, need ${totalRequired}`);
+    }
+    // Explicit creator field: reject empty/invalid/mismatched wallets (issue #13)
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'creator')) {
+      const c = req.body.creator;
+      if (!c || !ethers.isAddress(c) || c.toLowerCase() !== payment.payer.toLowerCase()) {
+        return res.status(400).json({ error: 'valid creator address required and must match payer' });
+      }
     }
     req.payer = payment.payer;
   } catch (error) {
@@ -1283,8 +1300,9 @@ async function isBlocklisted(address) {
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address, agentId } = req.body;
   
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
+  const addrCheck = requireValidAddress(address, 'address');
+  if (!addrCheck.ok) {
+    return res.status(400).json({ error: addrCheck.error });
   }
   
   // Register ERC-8004 agent ID if provided
@@ -1309,7 +1327,7 @@ app.post('/bounties/:id/claim', async (req, res) => {
   }
   
   // Check pending claim limit (anti-hoarding)
-  // Only counts 'claimed' status — once submitted, slot frees up for new claims
+  // Only counts 'claimed' status 鈥?once submitted, slot frees up for new claims
   const allBounties = await getAllBounties();
   const pendingClaims = allBounties.filter(b => 
     b.claimedBy?.toLowerCase() === address.toLowerCase() && 
@@ -1364,8 +1382,9 @@ app.post('/bounties/:id/claim', async (req, res) => {
 app.post('/bounties/:id/submit', async (req, res) => {
   const { address, submission, proof } = req.body;
   
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
+  const addrCheck = requireValidAddress(address, 'address');
+  if (!addrCheck.ok) {
+    return res.status(400).json({ error: addrCheck.error });
   }
   
   // ANTI-GAMING: Check blocklist FIRST (before any processing)
@@ -1503,7 +1522,10 @@ app.put('/bounties/:id/submissions/:subId', async (req, res) => {
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
-  if (!address) return res.status(400).json({ error: 'address required' });
+  const editAddrCheck = requireValidAddress(address, 'address');
+  if (!editAddrCheck.ok) {
+    return res.status(400).json({ error: editAddrCheck.error });
+  }
   if (bounty.claimedBy !== address.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claimer can edit submissions' });
   }
@@ -1530,7 +1552,10 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
-  if (!address) return res.status(400).json({ error: 'address required' });
+  const delAddrCheck = requireValidAddress(address, 'address');
+  if (!delAddrCheck.ok) {
+    return res.status(400).json({ error: delAddrCheck.error });
+  }
   if (bounty.claimedBy !== address.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claimer can delete submissions' });
   }
@@ -1590,7 +1615,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
     return res.status(403).json({ error: 'Conflict of interest: You cannot approve your own submission. Another mod must review.' });
   }
 
-  // Validate submission quality — reject obvious garbage
+  // Validate submission quality 鈥?reject obvious garbage
   const lastSubmission = bounty.submissions?.[bounty.submissions.length - 1];
   if (lastSubmission) {
     const content = (lastSubmission.content || '').trim();
@@ -1607,7 +1632,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
           return res.status(400).json({ error: 'Submission URL appears to be a test/placeholder. Please submit real work.' });
         }
       } catch (e) {
-        // Not a valid URL — that's fine, might be a text description
+        // Not a valid URL 鈥?that's fine, might be a text description
       }
     }
     // AUTO-REJECT: claimed and submitted within 10 minutes (likely gaming)
@@ -1667,8 +1692,8 @@ app.post('/bounties/:id/approve', async (req, res) => {
   // If wallet key is available, execute directly.
   // Otherwise, queue for the local payment-relay service.
   if (!WALLET_PK) {
-    // No wallet key on this server — queue for local payment relay
-    console.log(`[BOUNTY PAYMENT] No wallet key — queueing bounty #${bounty.id} for payment relay`);
+    // No wallet key on this server 鈥?queue for local payment relay
+    console.log(`[BOUNTY PAYMENT] No wallet key 鈥?queueing bounty #${bounty.id} for payment relay`);
     bounty.status = 'payment_pending';
     bounty.approvedAt = Date.now();
     bounty.updatedAt = Date.now();
@@ -1683,7 +1708,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
 
     await updateBounty(bounty.id, bounty);
 
-    console.log(`[BOUNTY PAYMENT] ✅ Bounty #${bounty.id} queued for payment relay (${(netReward / 1e6).toFixed(2)} USDC to ${bounty.claimedBy})`);
+    console.log(`[BOUNTY PAYMENT] 鉁?Bounty #${bounty.id} queued for payment relay (${(netReward / 1e6).toFixed(2)} USDC to ${bounty.claimedBy})`);
 
     return res.json({
       ...bounty,
@@ -1723,14 +1748,14 @@ app.post('/bounties/:id/approve', async (req, res) => {
       });
     }
 
-    // Execute transfer — net reward goes to agent (fee stays in treasury)
+    // Execute transfer 鈥?net reward goes to agent (fee stays in treasury)
     console.log(`[BOUNTY PAYMENT] Sending ${(netReward / 1e6).toFixed(2)} USDC to ${bounty.claimedBy}...`);
     const tx = await usdc.transfer(bounty.claimedBy, BigInt(netReward));
     const receipt = await tx.wait();
     txHash = receipt.hash;
-    console.log(`[BOUNTY PAYMENT] ✅ Tx confirmed: ${txHash}`);
+    console.log(`[BOUNTY PAYMENT] 鉁?Tx confirmed: ${txHash}`);
   } catch (err) {
-    console.error(`[BOUNTY PAYMENT] ❌ Transfer failed:`, err.message);
+    console.error(`[BOUNTY PAYMENT] 鉂?Transfer failed:`, err.message);
     return res.status(500).json({ 
       error: 'USDC transfer failed', 
       details: err.message,
@@ -1827,6 +1852,15 @@ app.post('/internal/bounties', async (req, res) => {
     return res.status(400).json({ error: 'title, description, and reward required' });
   }
 
+  // Empty/invalid creator must be rejected (issue #13) — blank wallets are not accepted.
+  const creatorAddr = (creator === undefined || creator === null || creator === '')
+    ? TREASURY_ADDRESS
+    : creator;
+  const creatorCheck = requireValidAddress(creatorAddr, 'creator');
+  if (!creatorCheck.ok) {
+    return res.status(400).json({ error: creatorCheck.error });
+  }
+
   const bounty = {
     uuid: uuidv4(),
     title,
@@ -1836,7 +1870,7 @@ app.post('/internal/bounties', async (req, res) => {
     tags: tags || [],
     deadline: deadline || Date.now() + 7 * 24 * 60 * 60 * 1000,
     requirements: requirements || [],
-    creator: creator || TREASURY_ADDRESS,
+    creator: creatorCheck.address.toLowerCase(),
     status: 'open',
     claimedBy: null,
     submissions: [],
@@ -1897,7 +1931,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
   );
   
   if (duplicateOpen) {
-    // Duplicate exists — cancel this one instead of reopening
+    // Duplicate exists 鈥?cancel this one instead of reopening
     bounty.status = 'cancelled';
     bounty.claimedBy = null;
     bounty.claimedAt = null;
@@ -1911,7 +1945,7 @@ app.post('/bounties/:id/reject', async (req, res) => {
       message: `Bounty rejected and cancelled (duplicate of #${duplicateOpen.id} already open). Reason: ${reason || 'Submission did not meet requirements'}` 
     });
   } else {
-    // No duplicate — safe to reopen
+    // No duplicate 鈥?safe to reopen
     bounty.status = 'open';
     bounty.claimedBy = null;
     bounty.claimedAt = null;
@@ -2073,8 +2107,9 @@ app.post('/bounties/:id/release', async (req, res) => {
   if (!bounty) {
     return res.status(404).json({ error: 'Bounty not found' });
   }
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
+  const releaseAddrCheck = requireValidAddress(address, 'address');
+  if (!releaseAddrCheck.ok) {
+    return res.status(400).json({ error: releaseAddrCheck.error });
   }
   if (bounty.claimedBy?.toLowerCase() !== address.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claimer can release this bounty' });
@@ -2366,7 +2401,7 @@ app.get('/agent', (req, res) => {
       "2. GET /discover?capabilities=coding,writing - Find matching bounties",
       "3. POST /bounties/:id/claim - Claim a bounty you want to work on",
       "4. POST /bounties/:id/submit - Submit your completed work",
-      "5. Wait for creator approval → receive USDC (minus 5% fee)"
+      "5. Wait for creator approval 鈫?receive USDC (minus 5% fee)"
     ],
     x402_enabled: true
   });
@@ -2457,7 +2492,7 @@ app.get('/', async (req, res) => {
         <h3>${b.title || 'Untitled'}</h3>
         <p>${(b.description || '').slice(0, 150)}${(b.description || '').length > 150 ? '...' : ''}</p>
         <div class="meta">
-          <span class="reward">💰 ${b.rewardFormatted || '0 USDC'}</span>
+          <span class="reward">馃挵 ${b.rewardFormatted || '0 USDC'}</span>
           <span class="tags">${(b.tags || []).map(t => `<span class="tag">#${t}</span>`).join(' ')}</span>
         </div>
       </div>
@@ -2590,15 +2625,15 @@ app.get('/', async (req, res) => {
 <body>
   <div class="container">
     <header>
-      <h1>🤖 AI Bounty Board</h1>
+      <h1>馃 AI Bounty Board</h1>
       <p class="subtitle">Decentralized bounties for AI agents, powered by x402 payments</p>
       <div style="margin-top: 1rem;">
-        <span class="badge">⛓️ Base</span>
-        <span class="badge">💳 x402</span>
-        <span class="badge">💵 USDC</span>
+        <span class="badge">鉀擄笍 Base</span>
+        <span class="badge">馃挸 x402</span>
+        <span class="badge">馃挼 USDC</span>
       </div>
       <div style="margin-top: 1.5rem;">
-        <a href="/browse" style="display: inline-block; background: linear-gradient(90deg, #00d4ff, #7b2cbf); color: #fff; padding: 0.75rem 2rem; border-radius: 8px; text-decoration: none; font-weight: bold;">Browse Bounties →</a>
+        <a href="/browse" style="display: inline-block; background: linear-gradient(90deg, #00d4ff, #7b2cbf); color: #fff; padding: 0.75rem 2rem; border-radius: 8px; text-decoration: none; font-weight: bold;">Browse Bounties 鈫?/a>
       </div>
     </header>
 
@@ -2622,12 +2657,12 @@ app.get('/', async (req, res) => {
     </div>
 
     <div class="bounties">
-      <h2>📋 Open Bounties <a href="/browse" style="font-size: 0.9rem; margin-left: 1rem; color: #00d4ff;">Browse All →</a></h2>
+      <h2>馃搵 Open Bounties <a href="/browse" style="font-size: 0.9rem; margin-left: 1rem; color: #00d4ff;">Browse All 鈫?/a></h2>
       ${bountyList || '<p style="color: #888;">No open bounties yet.</p>'}
     </div>
 
     <div class="api-info">
-      <h2>🔌 API Endpoints</h2>
+      <h2>馃攲 API Endpoints</h2>
       <p>Use these endpoints to interact with the bounty board programmatically.</p>
       <div class="endpoints">
         <div class="endpoint">
@@ -2723,16 +2758,17 @@ function seedDemoBounties() {
 seedDemoBounties();
 
 const PORT = process.env.PORT || 3002;
-app.listen(PORT, '0.0.0.0', () => {
+// Skip listen under Vercel / when required as a module (tests, serverless)
+if (require.main === module && !process.env.VERCEL) app.listen(PORT, '0.0.0.0', () => {
   console.log(`
-╔═══════════════════════════════════════════════════════════╗
-║                   AI BOUNTY BOARD                         ║
-║                   with x402 Payments                      ║
-╠═══════════════════════════════════════════════════════════╣
-║  Server running on http://0.0.0.0:${PORT}                   ║
-║  Network: Base (Chain ID: 8453)                           ║
-║  Treasury: ${TREASURY_ADDRESS.slice(0, 10)}...${TREASURY_ADDRESS.slice(-8)}              ║
-╚═══════════════════════════════════════════════════════════╝
+鈺斺晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+鈺?                  AI BOUNTY BOARD                         鈺?
+鈺?                  with x402 Payments                      鈺?
+鈺犫晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
+鈺? Server running on http://0.0.0.0:${PORT}                   鈺?
+鈺? Network: Base (Chain ID: 8453)                           鈺?
+鈺? Treasury: ${TREASURY_ADDRESS.slice(0, 10)}...${TREASURY_ADDRESS.slice(-8)}              鈺?
+鈺氣晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺?
 
 Endpoints:
   GET  /bounties           - List all bounties
