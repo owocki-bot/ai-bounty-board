@@ -97,7 +97,8 @@ app.get('/browse', async (req, res) => {
       '<span class="status-badge" style="background:' + (statusColors[b.status] || '#666') + '">' + (b.status || '').toUpperCase() + '</span>' +
       '<span class="reward">💰 ' + esc(b.rewardFormatted) + '</span></div>' +
       '<h3 class="bounty-title">' + esc(b.title) + '</h3>' +
-      '<p class="bounty-desc">' + esc(b.description) + '</p>' +
+      '<div class="bounty-desc-wrapper"><p class="bounty-desc">' + esc(b.description) + '</p>' +
+      (b.description.length > 250 ? '<button class="btn-desc-toggle" onclick="this.previousElementSibling.classList.toggle(\'expanded\');this.textContent=this.previousElementSibling.classList.contains(\'expanded\')?\'\u25B2 Show less\':\'\u25BC Show more\'">\u25BC Show more</button>' : '') + '</div>' +
       '<div class="bounty-tags">' + tagsHtml + '</div>' +
       '<div class="bounty-meta">' +
       '<div class="meta-item"><span class="meta-label">Creator</span><span class="meta-value">' + (b.creator || '').slice(0,6) + '...' + (b.creator || '').slice(-4) + '</span></div>' +
@@ -228,7 +229,11 @@ app.get('/browse', async (req, res) => {
     '.status-badge { padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.7rem; font-weight: bold; text-transform: uppercase; }\n' +
     '.reward { font-size: 1.1rem; font-weight: bold; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\n' +
     '.bounty-title { font-size: 1.2rem; margin-bottom: 0.75rem; color: #fff; }\n' +
-    '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; margin-bottom: 1rem; }\n' +
+    '.bounty-desc-wrapper { margin-bottom: 1rem; }\n' +
+    '.bounty-desc { color: #aaa; font-size: 0.9rem; line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }\n' +
+    '.bounty-desc.expanded { display: block; -webkit-line-clamp: unset; }\n' +
+    '.btn-desc-toggle { background: none; border: none; color: #00d4ff; font-size: 0.8rem; cursor: pointer; padding: 0.25rem 0; }\n' +
+    '.btn-desc-toggle:hover { text-decoration: underline; }\n' +
     '.bounty-tags { margin-bottom: 1rem; }\n' +
     '.tag { background: rgba(255,255,255,0.1); padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.8rem; color: #888; text-decoration: none; margin-right: 0.5rem; display: inline-block; margin-bottom: 0.3rem; }\n' +
     '.tag:hover { background: rgba(0,212,255,0.2); color: #00d4ff; }\n' +
