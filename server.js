@@ -1121,11 +1121,20 @@ app.get('/mod/pending', async (req, res) => {
  * POST /bounties
  */
 app.post('/bounties', async (req, res) => {
-  const { title, description, reward, tags, deadline, requirements } = req.body;
-  
-  if (!title || !description || !reward) {
-    return res.status(400).json({ error: 'title, description, and reward required' });
-  }
+  const { title, description, reward, tags, deadline, requirements, creator_address } = req.body;
+
+  if (!creator_address || !creator_address.trim()) {
+  return res.status(400).json({ 
+    error: 'creator_address is required',
+    message: 'Please provide your Ethereum wallet address to post a bounty.'
+  });
+}
+if (!/^0x[a-fA-F0-9]{40}$/.test(creator_address.trim())) {
+  return res.status(400).json({ 
+    error: 'Invalid Ethereum wallet address',
+    message: 'creator_address must be a valid Ethereum address (0x followed by 40 hex characters).'
+  });
+}
   
   // SECURITY PAUSE: Only admin wallet can create bounties during security audit
   const ADMIN_WALLET = '0xccD7200024A8B5708d381168ec2dB0DC587af83F';
@@ -1228,6 +1237,9 @@ app.post('/bounties', async (req, res) => {
     reward: reward.toString(), // USDC amount in smallest units
     rewardFormatted: (parseInt(reward) / 1e6).toFixed(2) + ' USDC',
     tags: tags || [],
+        creator: req.payer,
+    creator_address: creator_address.trim().toLowerCase(),  ← 新加这行
+    status: 'open',
     deadline: deadline || Date.now() + 7 * 24 * 60 * 60 * 1000, // Default 7 days
     requirements: requirements || [],
     creator: req.payer,
