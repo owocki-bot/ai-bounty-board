@@ -1121,10 +1121,13 @@ app.get('/mod/pending', async (req, res) => {
  * POST /bounties
  */
 app.post('/bounties', async (req, res) => {
-  const { title, description, reward, tags, deadline, requirements } = req.body;
+  const { title, description, reward, tags, deadline, requirements, creator } = req.body;
   
   if (!title || !description || !reward) {
     return res.status(400).json({ error: 'title, description, and reward required' });
+  }
+  if (creator && !ethers.isAddress(creator)) {
+    return res.status(400).json({ error: 'valid creator address required' });
   }
   
   // SECURITY PAUSE: Only admin wallet can create bounties during security audit
@@ -1135,6 +1138,9 @@ app.post('/bounties', async (req, res) => {
     try {
       const payment = JSON.parse(Buffer.from(paymentHeader, 'base64').toString());
       const payerWallet = payment.payer?.toLowerCase();
+      if (!ethers.isAddress(payerWallet)) {
+        return res.status(400).json({ error: 'Invalid wallet address in payment' });
+      }
       
       if (payerWallet !== ADMIN_WALLET.toLowerCase()) {
         console.log(`[BOUNTY CREATION BLOCKED] Non-admin wallet ${payment.payer} attempted to create bounty during security pause`);
@@ -1283,8 +1289,8 @@ async function isBlocklisted(address) {
 app.post('/bounties/:id/claim', async (req, res) => {
   const { address, agentId } = req.body;
   
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
+  if (!address || !ethers.isAddress(address)) {
+    return res.status(400).json({ error: 'valid address required' });
   }
   
   // Register ERC-8004 agent ID if provided
@@ -1364,8 +1370,8 @@ app.post('/bounties/:id/claim', async (req, res) => {
 app.post('/bounties/:id/submit', async (req, res) => {
   const { address, submission, proof } = req.body;
   
-  if (!address) {
-    return res.status(400).json({ error: 'address required' });
+  if (!address || !ethers.isAddress(address)) {
+    return res.status(400).json({ error: 'valid address required' });
   }
   
   // ANTI-GAMING: Check blocklist FIRST (before any processing)
@@ -1503,7 +1509,7 @@ app.put('/bounties/:id/submissions/:subId', async (req, res) => {
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
-  if (!address) return res.status(400).json({ error: 'address required' });
+  if (!address || !ethers.isAddress(address)) return res.status(400).json({ error: 'valid address required' });
   if (bounty.claimedBy !== address.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claimer can edit submissions' });
   }
@@ -1530,7 +1536,7 @@ app.delete('/bounties/:id/submissions/:subId', async (req, res) => {
   const bounty = await getBounty(req.params.id);
 
   if (!bounty) return res.status(404).json({ error: 'Bounty not found' });
-  if (!address) return res.status(400).json({ error: 'address required' });
+  if (!address || !ethers.isAddress(address)) return res.status(400).json({ error: 'valid address required' });
   if (bounty.claimedBy !== address.toLowerCase()) {
     return res.status(403).json({ error: 'Only the claimer can delete submissions' });
   }
@@ -2205,8 +2211,8 @@ app.patch('/admin/bounties/:id', async (req, res) => {
 app.post('/admin/blocklist', async (req, res) => {
   const { wallet, reason, blockedBy } = req.body;
   
-  if (!wallet) {
-    return res.status(400).json({ error: 'wallet required' });
+  if (!wallet || !ethers.isAddress(wallet)) {
+    return res.status(400).json({ error: 'valid wallet required' });
   }
   
   const normalized = wallet.toLowerCase();
@@ -2389,6 +2395,17 @@ app.get('/.well-known/x402', (req, res) => {
 
 
 // 1-click claim UI handler (loaded from browse-handler.js)
+// Redirect missing guide pages to guidelines (Issue #9 Bug 3)
+app.get('/guides/:page?', (req, res) => {
+  console.log('[REDIRECT] /guides/' + (req.params.page || '') + ' -> /guidelines');
+  res.redirect(301, '/guidelines');
+});
+
+// Redirect /social-contract to /guidelines for consistency (Issue #9 Bug 2)
+app.get('/social-contract', (req, res) => {
+  res.redirect(301, '/guidelines');
+});
+
 require("./browse-handler")(app, getAllBounties);
 require("./analytics-handler")(app, getAllBounties);
 

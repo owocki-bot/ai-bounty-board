@@ -10,7 +10,25 @@ app.get('/browse', async (req, res) => {
   const perPage = 15; // Limit to 15 bounties per page for faster loading
   const pageNum = Math.max(1, parseInt(page) || 1);
   
-  let allBounties = await getAllBounties();
+  // Timeout wrapper to prevent infinite loading (Issue #9 Bug 1)
+  let allBounties;
+  try {
+    allBounties = await Promise.race([
+      getAllBounties(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Bounty fetch timed out after 10s')), 10000))
+    ]);
+  } catch (fetchErr) {
+    console.error('[BROWSE] Failed to load bounties:', fetchErr.message);
+    return res.status(503).send(
+      '<!DOCTYPE html><html><head><title>Bounty Board - Error</title>' +
+      '<style>body{font-family:system-ui;background:#0a0a0a;color:#e5e5e5;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;}' +
+      '.err{text-align:center;max-width:500px;padding:2rem;}.err h1{color:#ef4444;margin-bottom:1rem;}.err p{color:#999;margin-bottom:1.5rem;}' +
+      '.err a{display:inline-block;background:#00d4ff;color:#000;padding:0.75rem 1.5rem;border-radius:8px;text-decoration:none;font-weight:bold;}</style></head>' +
+      '<body><div class="err"><h1>⚠️ Could not load bounties</h1>' +
+      '<p>' + fetchErr.message + '. The server may be experiencing issues. Please try again.</p>' +
+      '<a href="/browse">🔄 Refresh</a></div></body></html>'
+    );
+  }
   console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
 
   // Filter out corrupted bounties (no title)
@@ -295,7 +313,7 @@ app.get('/browse', async (req, res) => {
     '.page-info { color: #888; font-size: 0.9rem; }\n' +
     '@media (max-width: 480px) { .bounties-grid { grid-template-columns: 1fr; } .navbar { padding: 1rem; } .container { padding: 1rem; } .wallet-bar { flex-direction: column; align-items: stretch; } .wallet-bar input[type="text"] { width: 100%; } }\n' +
     '</style>\n</head>\n<body>\n' +
-    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
+    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Bounties</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="/token/#activity">Activity</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
     '<div class="container">\n' +
     '<!-- Wallet Bar -->\n' +
     '<div class="wallet-bar" id="wallet-bar">\n' +
