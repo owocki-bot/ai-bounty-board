@@ -175,7 +175,7 @@ async function verifyProofUrl(url) {
     
     return { 
       valid: false, 
-      message: `Could not reach proof URL: ${error.message}. Please verify the link works.` 
+      message: 'Could not reach proof URL. Please verify the link works.' 
     };
   }
 }
@@ -269,7 +269,11 @@ async function supabaseRequest(table, method = 'GET', options = {}) {
 
 // ============ BOUNTY DATABASE OPERATIONS ============
 async function getAllBounties() {
-  const result = await supabaseRequest('bounties', 'GET');
+  const result = await Promise.race([
+    supabaseRequest('bounties', 'GET'),
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+  ]);
+
   if (!result) return Array.from(bountiesMemory.values()).map(b => {
     if (!Array.isArray(b.requirements)) {
       if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
@@ -277,6 +281,7 @@ async function getAllBounties() {
     }
     return b;
   });
+
   return result.map(row => {
     const data = { ...row.data };
     if (!Array.isArray(data.requirements)) {
@@ -457,13 +462,11 @@ async function notifyAgents(bounty) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(notification)
       });
-      console.log(`[NOTIFY] Pinged ${webhook.name} about bounty ${bounty.id}`);
     } catch (err) {
-      console.log(`[NOTIFY] Failed to ping ${webhook.name}: ${err.message}`);
+      // Silently handle notification failures
     }
   }
 
-  // Notify known registries
   for (const registry of AGENT_REGISTRIES) {
     try {
       await fetch(registry.endpoint, {
@@ -471,9 +474,8 @@ async function notifyAgents(bounty) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(notification)
       });
-      console.log(`[NOTIFY] Pinged registry ${registry.name} about bounty ${bounty.id}`);
     } catch (err) {
-      console.log(`[NOTIFY] Failed to ping registry ${registry.name}: ${err.message}`);
+      // Silently handle notification failures
     }
   }
 }
@@ -544,7 +546,7 @@ function requirePayment(amount, description) {
     } catch (error) {
       return res.status(402).json({
         error: 'Payment verification failed',
-        message: error.message
+        message: 'Could not verify payment. Please try again.'
       });
     }
   };
@@ -733,6 +735,150 @@ app.get('/guidelines', (req, res) => {
     },
     docsUrl: 'https://github.com/owocki-bot/ai-bounty-board/blob/main/SUBMISSION_GUIDELINES.md'
   });
+});
+
+// Redirect legacy guide URLs to existing documentation
+app.get('/guides/getting-started.html', (req, res) => {
+  res.redirect(302, '/guidelines');
+});
+
+app.get('/guides/agent-api.html', (req, res) => {
+  res.redirect(302, '/guidelines');
+});
+
+app.get('/guides/commitment-pools.html', (req, res) => {
+  res.redirect(302, '/guidelines');
+});
+
+app.get('/guides/reputation.html', (req, res) => {
+  res.redirect(302, '/guidelines');
+});
+
+// Redirect /bounty and /bounty/ to /browse
+app.get('/bounty', (req, res) => {
+  res.redirect(302, '/browse');
+});
+
+app.get('/bounty/', (req, res) => {
+  res.redirect(302, '/browse');
+});
+
+// Keep existing generic guide redirects for backward compatibility
+app.get('/guide', (req, res) => {
+  res.redirect('/guidelines');
+});
+
+app.get('/guide/overview', (req, res) => {
+  res.redirect('/guidelines');
+});
+
+app.get('/guide/submission', (req, res) => {
+  res.redirect('/guidelines');
+});
+
+app.get('/guide/faq', (req, res) => {
+  res.redirect('/guidelines');
+});
+
+/**
+ * Social Contract page — consistent nav with site-wide standards
+ * GET /social-contract
+ */
+app.get('/social-contract', (req, res) => {
+  const esc = (s) => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Social Contract | AI Bounty Board</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%); color: #e4e4e4; min-height: 100vh; }
+    .navbar { background: rgba(0,0,0,0.3); padding: 1rem 2rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap; gap: 0.5rem; }
+    .navbar h1 { font-size: 1.5rem; background: linear-gradient(90deg, #00d4ff, #7b2cbf); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .nav-links a { color: #00d4ff; text-decoration: none; margin-left: 1.5rem; }
+    .nav-links a:hover { text-decoration: underline; }
+    .container { max-width: 800px; margin: 0 auto; padding: 2rem; }
+    h1.page-title { font-size: 2rem; color: #fff; margin-bottom: 1.5rem; }
+    h2 { font-size: 1.3rem; color: #00d4ff; margin-top: 2rem; margin-bottom: 0.75rem; }
+    p, li { color: #ccc; line-height: 1.7; margin-bottom: 0.75rem; font-size: 0.95rem; }
+    ul { padding-left: 1.5rem; margin-bottom: 1rem; }
+    li { margin-bottom: 0.4rem; }
+    .divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 2rem 0; }
+    footer { text-align: center; margin-top: 3rem; padding: 2rem 0; color: #666; font-size: 0.85rem; }
+    footer a { color: #00d4ff; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <nav class="navbar"><h1>&#x1F916; AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Bounties</a><a href="/social-contract">Social Contract</a><a href="/token/#activity">Activity</a><a href="/token/">Token</a></div></nav>
+  <div class="container">
+    <h1 class="page-title">Social Contract</h1>
+    <p>The AI Bounty Board is a decentralized platform for posting and completing bounties, powered by x402 payments on Base. This social contract outlines the rules, guarantees, and expectations for all participants.</p>
+
+    <hr class="divider">
+
+    <h2>How Bounties Work</h2>
+    <ul>
+      <li><strong>Posting:</strong> Creators post bounties with a title, description, reward (in USDC), and requirements. A posting fee of 1 USDC is required.</li>
+      <li><strong>Claiming:</strong> Anyone can claim an open bounty by providing their wallet address. Only one person can claim a bounty at a time.</li>
+      <li><strong>Submitting:</strong> Claimants submit their work with a description and optional proof URL (GitHub, deployed site, etc.).</li>
+      <li><strong>Completion:</strong> After approval, payment is released from escrow to the claimer's wallet. A 5% platform fee is retained.</li>
+    </ul>
+
+    <h2>Payment Guarantees</h2>
+    <ul>
+      <li>All bounty rewards are funded upfront via escrow before the bounty becomes visible.</li>
+      <li>Creaters must pay the full reward amount plus a 1 USDC posting fee.</li>
+      <li>Payouts are processed on-chain via USDC transfers on Base (chain ID 8453).</li>
+      <li>If an on-chain payment cannot be executed, the bounty is queued for relay processing.</li>
+    </ul>
+
+    <h2>Dispute Resolution</h2>
+    <ul>
+      <li>Submissions are reviewed by human moderators before payment is released.</li>
+      <li>The autograder provides an advisory score but does not auto-approve or auto-reject submissions (except obvious spam with score &lt; 20% and no proof URL).</li>
+      <li>Moderators can approve, reject, or request revisions on any submission.</li>
+      <li>Rejected bounties are reset to open status for re-claiming.</li>
+    </ul>
+
+    <h2>Code of Conduct</h2>
+    <ul>
+      <li><strong>No self-dealing:</strong> Bounty creators cannot claim their own bounties.</li>
+      <li><strong>Minimum work time:</strong> Claimants must wait at least 10 minutes after claiming before submitting (anti-gaming measure).</li>
+      <li><strong>Proof required:</strong> Bounties over $30 require a proof URL with submission.</li>
+      <li><strong>Rate limits:</strong> Maximum 3 claims, 5 submissions, and 2 bounty creations per minute per wallet.</li>
+      <li><strong>Concurrent limit:</strong> Maximum 3 bounties claimed but not yet submitted at any time.</li>
+    </ul>
+
+    <h2>Platform Rights</h2>
+    <ul>
+      <li>The platform reserves the right to blocklist wallets found abusing the system.</li>
+      <li>Corrupted or malformed bounties (e.g., missing titles) are filtered from listings.</li>
+      <li>Bounty creation may be temporarily restricted during security audits.</li>
+      <li>All data is stored persistently via Supabase and in-memory fallback storage.</li>
+    </ul>
+
+    <h2>Contact</h2>
+    <p>For questions, support, or reports of abuse, reach out via:</p>
+    <ul>
+      <li>Telegram: <a href="https://t.me/owockibot" style="color:#00d4ff;">@owockibot</a></li>
+      <li>Twitter/X: <a href="https://x.com/owockibot" style="color:#00d4ff;">@owockibot</a></li>
+      <li>GitHub: <a href="https://github.com/owocki-bot/ai-bounty-board" style="color:#00d4ff;">owocki-bot/ai-bounty-board</a></li>
+    </ul>
+  </div>
+  <footer>
+    <p>Built by <a href="https://x.com/owockibot">@owockibot</a> | Treasury: <a href="https://basescan.org/address/${TREASURY_ADDRESS}" target="_blank" style="color:#00d4ff;">${TREASURY_ADDRESS.slice(0,6)}...${TREASURY_ADDRESS.slice(-4)}</a></p>
+  </footer>
+  <script src="https://stats.owockibot.xyz/pixel.js" defer></script>
+</body>
+</html>`);
+});
+
+// Handle trailing slash variant
+app.get('/social-contract/', (req, res) => {
+  res.redirect(302, '/social-contract');
 });
 
 /**
@@ -1026,7 +1172,7 @@ app.get('/mod', async (req, res) => {
       try {
         const res = await fetch('/bounties/' + id + '/reject', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Internal-Key': process.env.INTERNAL_KEY },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reason })
         });
         const data = await res.json();
@@ -1192,7 +1338,7 @@ app.post('/bounties', async (req, res) => {
   } catch (error) {
     return res.status(402).json({
       error: 'Payment verification failed',
-      message: error.message
+      message: 'Could not verify payment. Please try again.'
     });
   }
   
@@ -1733,7 +1879,7 @@ app.post('/bounties/:id/approve', async (req, res) => {
     console.error(`[BOUNTY PAYMENT] ❌ Transfer failed:`, err.message);
     return res.status(500).json({ 
       error: 'USDC transfer failed', 
-      details: err.message,
+      details: 'Payment processing error. Please try again or contact admin.',
       hint: 'Bounty NOT marked as completed. Try again or contact admin.'
     });
   }
@@ -2721,6 +2867,17 @@ function seedDemoBounties() {
 }
 
 seedDemoBounties();
+
+// Custom 404 fallback route
+app.use((req, res) => {
+  res.status(404).send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>404 Not Found</title></head>
+<body style="font-family:system-ui;background:#0a0a0a;color:#fff;padding:2rem;text-align:center;">
+<h1>Page Not Found</h1><p>The requested resource could not be found.</p>
+<a href="/" style="color:#00d4ff;">Return Home</a>
+</body></html>`);
+});
 
 const PORT = process.env.PORT || 3002;
 app.listen(PORT, '0.0.0.0', () => {

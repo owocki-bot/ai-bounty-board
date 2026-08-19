@@ -10,12 +10,22 @@ app.get('/browse', async (req, res) => {
   const perPage = 15; // Limit to 15 bounties per page for faster loading
   const pageNum = Math.max(1, parseInt(page) || 1);
   
-  let allBounties = await getAllBounties();
-  console.log('[BROWSE] Loaded', allBounties.length, 'bounties');
+  // Add timeout to getAllBounties to prevent indefinite loading
+  let allBounties;
+  let fetchFailed = false;
+  try {
+    allBounties = await Promise.race([
+      getAllBounties(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000))
+    ]);
+  } catch (_e) {
+    fetchFailed = true;
+    // Fetch timeout or API failure — render fallback UI with empty bounties
+    allBounties = [];
+  }
 
   // Filter out corrupted bounties (no title)
   allBounties = allBounties.filter(b => b.title);
-  console.log('[BROWSE] Valid bounties:', allBounties.length);
 
   // Keep unfiltered bounties for profile section
   const allBountiesUnfiltered = [...allBounties];
@@ -162,7 +172,9 @@ app.get('/browse', async (req, res) => {
 
   const gridHtml = paginatedBounties.length > 0
     ? '<div class="bounties-grid">' + bountyCards + '</div>' + paginationHtml
-    : '<div class="empty-state"><h2>No bounties found</h2><p>Try adjusting your filters or check back later.</p></div>';
+    : fetchFailed
+      ? '<div class="empty-state"><h2>Could not load bounties</h2><p>Refresh to try again.</p></div>'
+      : '<div class="empty-state"><h2>No bounties found</h2><p>Try adjusting your filters or check back later.</p></div>';
 
   const statusFilterActive = (s) => (!status || status === 'all') && s === 'all' || status === s ? ' active' : '';
 
@@ -295,7 +307,7 @@ app.get('/browse', async (req, res) => {
     '.page-info { color: #888; font-size: 0.9rem; }\n' +
     '@media (max-width: 480px) { .bounties-grid { grid-template-columns: 1fr; } .navbar { padding: 1rem; } .container { padding: 1rem; } .wallet-bar { flex-direction: column; align-items: stretch; } .wallet-bar input[type="text"] { width: 100%; } }\n' +
     '</style>\n</head>\n<body>\n' +
-    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Browse</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
+    '<nav class="navbar"><h1>🤖 AI Bounty Board</h1><div class="nav-links"><a href="/">Home</a><a href="/browse">Bounties</a><a href="/profile">My Profile</a><a href="/stats">Stats</a><a href="/token/#activity">Activity</a><a href="https://github.com/owocki-bot/ai-bounty-board" target="_blank">GitHub</a></div></nav>\n' +
     '<div class="container">\n' +
     '<!-- Wallet Bar -->\n' +
     '<div class="wallet-bar" id="wallet-bar">\n' +
@@ -613,7 +625,6 @@ app.get('/browse', async (req, res) => {
     '</body></html>'
   );
   } catch (err) {
-    console.error('[BROWSE] Error:', err);
     // Fail open: redirect to home instead of hard 500
     return res.redirect('/');
   }
@@ -698,8 +709,7 @@ app.get('/bounty/:id', async (req, res) => {
 </body>
 </html>`);
   } catch (err) {
-    console.error('[BOUNTY DETAIL] Error:', err);
-    res.status(500).send('Error: ' + err.message);
+    res.status(500).send('Could not load data. Please refresh.');
   }
 });
 
