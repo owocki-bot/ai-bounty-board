@@ -199,7 +199,8 @@ const RATE_LIMIT_MAX_CREATES = 2; // max 2 bounty creations per minute
 // ============ CONCURRENT CLAIM LIMITS ============
 // Prevents wallet hoarding — temporary until proof of reputation/identity
 // Only counts 'claimed' (not yet submitted) — once you submit, slot frees up
-const MAX_PENDING_CLAIMS = 3; // max bounties claimed but not yet submitted per wallet
+const MAX_PENDING_CLAIMS = parseInt(process.env.MAX_PENDING_CLAIMS) || 3;
+const MAX_OPEN_BOUNTIES_PER_CREATOR = parseInt(process.env.MAX_OPEN_BOUNTIES_PER_CREATOR) || 10;
 
 function checkRateLimit(address, action = 'claim') {
   const key = `${address.toLowerCase()}:${action}`;
@@ -711,9 +712,11 @@ app.get('/guidelines', (req, res) => {
       selfDealingBlocked: { description: 'Creator cannot claim their own bounty' }
     },
     rateLimits: {
-      claimsPerMinute: 3,
-      submissionsPerMinute: 5,
-      creationsPerMinute: 2
+      claimsPerMinute: RATE_LIMIT_MAX_CLAIMS,
+      submissionsPerMinute: RATE_LIMIT_MAX_SUBMISSIONS,
+      creationsPerMinute: RATE_LIMIT_MAX_CREATES,
+      maxPendingClaims: MAX_PENDING_CLAIMS,
+      maxOpenBountiesPerCreator: MAX_OPEN_BOUNTIES_PER_CREATOR
     },
     submissionRequirements: [
       'Clear description of work done',
@@ -1203,6 +1206,21 @@ app.post('/bounties', async (req, res) => {
     return res.status(429).json({ 
       error: 'Too many bounty creations. Please wait before trying again.',
       retryAfter: rateCheck.retryAfter
+    });
+  }
+  
+  // Queue cap: limit open bounties per creator (Issue #2)
+  const allBounties = await getAllBounties();
+  const creatorOpenBounties = allBounties.filter(b => 
+    b.creator?.toLowerCase() === req.payer.toLowerCase() && 
+    (b.status === 'open' || b.status === 'claimed')
+  );
+  if (creatorOpenBounties.length >= MAX_OPEN_BOUNTIES_PER_CREATOR) {
+    console.log(`[QUEUE CAP] ${req.payer} has ${creatorOpenBounties.length} open bounties (max ${MAX_OPEN_BOUNTIES_PER_CREATOR})`);
+    return res.status(429).json({ 
+      error: `You have ${creatorOpenBounties.length} open/claimed bounties. Complete or cancel some before posting more.`,
+      maxOpen: MAX_OPEN_BOUNTIES_PER_CREATOR,
+      openBounties: creatorOpenBounties.map(b => ({ id: b.id, title: b.title, status: b.status }))
     });
   }
   
