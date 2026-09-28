@@ -268,21 +268,28 @@ async function supabaseRequest(table, method = 'GET', options = {}) {
 }
 
 // ============ BOUNTY DATABASE OPERATIONS ============
+// Normalize a raw bounty record before it is served or gated on.
+// Mirror/aggregate records (e.g. source: "supabase") carry only a `board_status`
+// field and no native `status`, so expose board_status as the effective status.
+// Without this, listing (/bounties), stats (/stats) and claim gating disagree:
+// the row is listed but `status` is undefined, so it is never "open".
+function normalizeBountyRecord(b) {
+  const data = { ...b };
+  if (!Array.isArray(data.requirements)) {
+    if (typeof data.requirements === 'string' && data.requirements.trim()) data.requirements = [data.requirements];
+    else data.requirements = [];
+  }
+  if (data.status == null && data.board_status != null) {
+    data.status = data.board_status;
+  }
+  return data;
+}
+
 async function getAllBounties() {
   const result = await supabaseRequest('bounties', 'GET');
-  if (!result) return Array.from(bountiesMemory.values()).map(b => {
-    if (!Array.isArray(b.requirements)) {
-      if (typeof b.requirements === 'string' && b.requirements.trim()) b.requirements = [b.requirements];
-      else b.requirements = [];
-    }
-    return b;
-  });
+  if (!result) return Array.from(bountiesMemory.values()).map(normalizeBountyRecord);
   return result.map(row => {
-    const data = { ...row.data };
-    if (!Array.isArray(data.requirements)) {
-      if (typeof data.requirements === 'string' && data.requirements.trim()) data.requirements = [data.requirements];
-      else data.requirements = [];
-    }
+    const data = normalizeBountyRecord(row.data);
     return { id: row.id.toString(), ...data };
   });
 }
@@ -292,11 +299,14 @@ async function getBounty(id) {
   const numId = parseInt(id);
   if (!isNaN(numId)) {
     const result = await supabaseRequest('bounties', 'GET', { query: `id=eq.${numId}` });
-    if (result?.[0]) return { id: result[0].id.toString(), ...result[0].data };
+    if (result?.[0]) return { id: result[0].id.toString(), ...normalizeBountyRecord(result[0].data) };
   }
   // Fall back to searching by UUID in data
   const all = await getAllBounties();
-  return all.find(b => b.id === id || b.uuid === id) || bountiesMemory.get(id);
+  const found = all.find(b => b.id === id || b.uuid === id);
+  if (found) return found;
+  const memory = bountiesMemory.get(id);
+  return memory ? normalizeBountyRecord(memory) : memory;
 }
 
 async function saveBounty(bounty) {
@@ -339,11 +349,12 @@ async function atomicClaim(id, claimerAddress) {
       console.log(`[ATOMIC CLAIM] Bounty ${id} not found`);
       return null;
     }
-    if (existing.status !== 'open') {
-      console.log(`[ATOMIC CLAIM] Bounty ${id} not open (status: ${existing.status})`);
+    const existingStatus = existing.status ?? existing.board_status;
+    if (existingStatus !== 'open') {
+      console.log(`[ATOMIC CLAIM] Bounty ${id} not open (status: ${existingStatus})`);
       return null;
     }
-    
+
     // Merge existing data with claim fields
     const now = Date.now();
     const mergedData = {
@@ -353,9 +364,11 @@ async function atomicClaim(id, claimerAddress) {
       claimedAt: now,
       updatedAt: now
     };
-    
-    // Conditional update - only if still open (prevents race condition)
-    const url = `${SUPABASE_URL}/rest/v1/bounties?id=eq.${numId}&data->>status=eq.open`;
+
+    // Conditional update - only if still open (prevents race condition).
+    // A mirror record has no native `status`, only `board_status`, so match open
+    // on either: status = "open", OR status absent AND board_status = "open".
+    const url = `${SUPABASE_URL}/rest/v1/bounties?id=eq.${numId}&or=(data->>status.eq.open,and(data->>status.is.null,data->>board_status.eq.open))`;
     
     const response = await fetch(url, {
       method: 'PATCH',
@@ -390,7 +403,7 @@ async function atomicClaim(id, claimerAddress) {
   // Fallback for memory-only mode (still has race condition but logs warning)
   console.warn(`[ATOMIC CLAIM] Using non-atomic fallback for bounty ${id}`);
   const bounty = bountiesMemory.get(id);
-  if (!bounty || bounty.status !== 'open') return null;
+  if (!bounty || (bounty.status ?? bounty.board_status) !== 'open') return null;
   
   bounty.status = 'claimed';
   bounty.claimedBy = claimerAddress.toLowerCase();
